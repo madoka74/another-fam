@@ -1,0 +1,44 @@
+name: AnotherFam
+options:
+  bundleIdPrefix: com.blankishworks
+  deploymentTarget:
+    visionOS: "2.0"
+targets:
+  # 비전프로 전용 앱
+  AnotherFam:
+    type: application
+    platform: visionOS
+    sources:
+      - path: AnotherFam
+        excludes: ["Model/**", "Sounds/**"]
+      # 말티즈 그물·움직임·털 무늬, 블랭키씨 인형 (tools/ 로 만들어 저장소에 둠 — 빌드 때 지우지 않음)
+      - path: AnotherFam/Model
+        type: folder
+        buildPhase: resources
+      # 소리 (tools/dog_sounds.py 로 만들어 저장소에 둠)
+      - path: AnotherFam/Sounds
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.blankishworks.another-fam
+        PRODUCT_NAME: AnotherFam
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "7"
+        SWIFT_VERSION: "5.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    info:
+      path: AnotherFam/Info.plist
+      properties:
+        CFBundleDisplayName: 어나더 팸
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        NSHandsTrackingUsageDescription: 손으로 강아지를 쓰다듬고 안아 주고, 장난감과 물건을 집는 데 사용합니다. 손 정보는 저장하지 않습니다.
+        NSWorldSensingUsageDescription: 강아지가 실제 바닥과 가구 사이를 다니고 가구 뒤로 가려지게 하는 데 사용합니다. 공간 정보는 저장하지 않습니다.
+        UIApplicationSceneManifest:
+          UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
+          UIApplicationSupportsMultipleScenes: true
+          UISceneConfigurations: {}

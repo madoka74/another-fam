@@ -1,0 +1,482 @@
+#!/usr/bin/env python3
+"""말티즈 움직임 만들기 → ios/AnotherFam/Model/dog_anim.bin
+자세(몸 높이·기울기, 등·목·머리, 발 닿는 점)를 적으면 다리는 풀어서(IK) 관절 돌림으로 바꾸고, 동작마다 초당 30장으로 구워 담음.
+앱은 이 동작들을 나이에 맞게 골라 이어 붙이고(몸 전체 동작 + 머리 동작 겹치기), 그 위에 숨·눈 깜빡임·꼬리 흔들기·귀 출렁임·바라보기·소리 맞춘 입을 얹음.
+사용: python3 tools/dog_anim.py [--sheet]"""
+import os, sys, json, struct, copy
+import numpy as np
+from dogrig import *
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(ROOT, 'ios', 'AnotherFam', 'Model')
+FPS = 30
+LEGS = ("FL", "FR", "HL", "HR")
+D = dict(dx=0., dy=0., dz=0., pitch=0., yaw=0., roll=0., sp=(0., 0., 0.), ch=(0., 0., 0.), nk=(0., 0., 0.), hd=(0., 0., 0.),
+         jaw=0., ear=(0., 0.), tail=(0., 0.), FL=(0., 0., 0., 0.), FR=(0., 0., 0., 0.), HL=(0., 0., 0., 0.), HR=(0., 0., 0., 0.),
+         lid=0., tongue=0., wag=.3, sq=0.)
+
+
+def S(base=None, **kw):
+    s = copy.deepcopy(base if base is not None else D)
+    s.update(kw)
+    return s
+
+
+def lerp(a, b, t):
+    if isinstance(a, tuple):
+        if a and a[0] == 'a' or b and b[0] == 'a': return a if t < .5 else b
+        return tuple(x + (y - x) * t for x, y in zip(a, b))
+    return a + (b - a) * t
+
+
+def mix(a, b, t):
+    return {k: lerp(a[k], b[k], t) for k in a}
+
+
+def solve(s):
+    """자세 → (뿌리 옮김 3, 관절 사원수 NJ×4, 덤 4). 디딘 발이 땅에 못 닿으면(다리가 다 펴짐) 몸을 그만큼 내림"""
+    q = np.tile(QI, (NJ, 1))
+    q[IDX["root"]] = qeuler(s["pitch"], s["yaw"], s["roll"])
+    for n, k in (("spine", "sp"), ("chest", "ch"), ("neck", "nk"), ("head", "hd")):
+        q[IDX[n]] = qeuler(*s[k])
+    q[IDX["jaw"]] = rx(s["jaw"])
+    q[IDX["earL"]] = qmul(rz(s["ear"][0]), rx(s["ear"][1])); q[IDX["earR"]] = qmul(rz(-s["ear"][0]), rx(s["ear"][1]))
+    L, C = s["tail"]
+    for n, a in (("tail1", L), ("tail2", C * .5), ("tail3", C * .3), ("tail4", C * .2)): q[IDX[n]] = rx(a)
+    pos = np.array([s["dx"], s["dy"], s["dz"]])
+    for it in range(3):
+        R, T, _ = fk(q, pos)
+        for leg in LEGS:
+            side = 1 if leg[1] == "L" else -1
+            i0 = IDX[leg + "0"]; par = PARENT[i0]
+            v = s[leg]
+            if v[0] == 'a':
+                q[i0] = qmul(rz(side * v[2]), rx(v[1])); q[i0 + 1] = rx(v[3]); q[i0 + 2] = rx(v[4])
+            else:
+                paw = PAW_FRONT if leg[0] == "F" else PAW_HIND
+                c = STANCE[leg] + np.array([side * v[0], v[1], v[2]])
+                tgt = c - qmat(rx(v[3])) @ paw
+                pj = T[par] + R[par] @ (REST[i0] - REST[par])
+                q[i0], q[i0 + 1], q[i0 + 2] = leg_ik(leg, R[par], pj, tgt, v[3])
+        R, T, _ = fk(q, pos)
+        err = 0.
+        for leg in LEGS:
+            v = s[leg]
+            if v[0] != 'a' and v[1] <= .021:
+                i2 = IDX[leg + "0"] + 2
+                cy = (T[i2] + R[i2] @ (PAW_FRONT if leg[0] == "F" else PAW_HIND))[1]
+                err = max(err, cy - v[1])
+        if err < .002: break
+        pos[1] -= err
+    return pos, q, np.array([s["lid"], s["tongue"], s["wag"], s["sq"]])
+
+
+CLIPS = []
+
+
+def ease(t):
+    return t * t * (3 - 2 * t)
+
+
+def clip(name, keys, loop=False, speed=0., mod=None, events=(), mask=None, tag="", lin=False):
+    """keys: [(시각, 자세)]. mod(자세, t) → 자세 (걸음처럼 식으로 만드는 움직임). mask='head' 면 머리 겹치기 동작"""
+    dur = keys[-1][0]
+    n = max(2, int(round(dur * FPS)) + (0 if loop else 1))
+    fr = []
+    for f in range(n):
+        t = f / FPS
+        k = 0
+        while k < len(keys) - 2 and t >= keys[k + 1][0]: k += 1
+        t0, a = keys[k]; t1, b = keys[k + 1]
+        u = 0 if t1 <= t0 else min(1, max(0, (t - t0) / (t1 - t0)))
+        s = mix(a, b, u if lin else ease(u))
+        if mod: s = mod(copy.deepcopy(s), t)
+        # 다리 방식(풀기/직접)이 바뀌는 구간은 양 끝을 풀어 사원수로 섞음
+        swap = [l for l in LEGS if (a[l][0] == 'a') != (b[l][0] == 'a')]
+        p, q, e = solve(s)
+        if swap and 0 < u < 1:
+            _, qa, _ = solve(mix(a, b, 0)); _, qb, _ = solve(mix(a, b, 1))
+            for l in swap:
+                for j in range(3):
+                    i = IDX[l + "0"] + j
+                    q[i] = qslerp(qa[i], qb[i], ease(u))
+        fr.append((p, q, e))
+    CLIPS.append(dict(name=name, n=n, loop=loop, speed=speed, events=[[round(float(t), 3), e] for t, e in events], mask=mask or "", tag=tag, fr=fr))
+
+
+def hold(name, s, dur=2.0, mod=None, **kw):
+    clip(name, [(0, s), (dur, s)], loop=True, mod=mod, **kw)
+
+
+def seq(name, steps, **kw):
+    """steps: [(걸리는 시간, 자세)] — 첫 항목의 시간은 0"""
+    t = 0; ks = []
+    for dt, s in steps:
+        t += dt; ks.append((t, s))
+    clip(name, ks, **kw)
+
+
+# ---------------- 기본 자세 ----------------
+STAND = S()
+SIT = S(dy=-.088, pitch=-.62, dz=.03, sp=(.10, 0, 0), ch=(.22, 0, 0), nk=(.14, 0, 0), hd=(.16, 0, 0), tail=(-.15, 0),
+        HL=(.014, .012, .112, -1.3), HR=(.014, .012, .112, -1.3))
+DOWN = S(dy=-.101, pitch=-.03, nk=(-.25, 0, 0), hd=(.22, 0, 0), tail=(-.25, -.1),
+         FL=(.004, .02, .085, -1.45), FR=(.004, .02, .085, -1.45), HL=(.016, .014, .10, -1.3), HR=(.016, .014, .10, -1.3))
+REST_ = S(DOWN, nk=(.42, 0, 0), hd=(.2, 0, 0), ear=(.15, 0), lid=.25, wag=0)
+SPLOOT = S(DOWN, dy=-.104, HL=('a', 1.45, .35, -.5, .9), HR=('a', 1.45, .35, -.5, .9), tail=(-.5, -.2))
+SIDE = S(dy=-.108, roll=1.42, dx=-.02, sp=(0, 0, 0), nk=(.1, 0, -.1), hd=(.1, 0, 0), tail=(-.9, -.5), wag=0,
+         FL=('a', -.75, .12, .5, .3), FR=('a', -.55, -.22, .7, .3), HL=('a', -.55, .12, .5, -.2), HR=('a', -.35, -.22, .6, -.2))
+CURL = S(DOWN, dy=-.103, roll=.35, sp=(.1, .55, 0), ch=(.1, .45, 0), nk=(.45, .75, 0), hd=(.3, .5, .2), tail=(-.6, .3), lid=1, wag=0,
+         HL=(.03, .014, .12, -1.3), HR=(.0, .014, .09, -1.3))
+BELLY = S(dy=-.106, roll=3.05, nk=(-.2, 0, 0), hd=(-.25, 0, .3), tail=(-.6, -.6), ear=(.5, 0),
+          FL=('a', -.7, .3, 1.5, .9), FR=('a', -.9, .3, 1.6, .9), HL=('a', -.9, .5, -1.3, .6), HR=('a', -.7, .5, -1.4, .6))
+BOW = S(pitch=.42, dy=-.012, dz=-.01, sp=(-.1, 0, 0), ch=(-.1, 0, 0), nk=(-.45, 0, 0), hd=(.05, 0, 0), tail=(.25, .1), wag=1,
+        FL=(.012, .014, .10, -1.3), FR=(.012, .014, .10, -1.3))
+BEG = S(SIT, dy=-.082, pitch=-1.2, dz=.055, sp=(.1, 0, 0), ch=(.25, 0, 0), nk=(.45, 0, 0), hd=(.5, 0, 0),
+        FL=('a', -.9, .05, 1.5, 1.1), FR=('a', -.9, .05, 1.5, 1.1), HL=(.02, .012, .10, -1.3), HR=(.02, .012, .10, -1.3))
+HIND = S(dy=-.035, pitch=-1.15, dz=.085, sp=(.1, 0, 0), ch=(.2, 0, 0), nk=(.5, 0, 0), hd=(.45, 0, 0), wag=1,
+         FL=('a', -.7, .05, 1.2, .8), FR=('a', -.7, .05, 1.2, .8), HL=(.01, 0, .05, -.25), HR=(.01, 0, .05, -.25))
+CROUCH = S(dy=-.04, pitch=.05, nk=(-.1, 0, 0), FL=(.01, 0, .02, 0), FR=(.01, 0, .02, 0), HL=(.01, 0, .02, 0), HR=(.01, 0, .02, 0))
+HELD = S(dy=.0, pitch=-.35, sp=(.15, 0, 0), ch=(.1, 0, 0), nk=(.1, 0, 0), tail=(-.9, -.4), wag=.2,
+         FL=('a', -.35, .05, .5, .5), FR=('a', -.3, .05, .6, .5), HL=('a', -.5, .1, -.5, .2), HR=('a', -.4, .1, -.6, .2))
+NEWBORN = S(DOWN, dy=-.10, nk=(.3, 0, 0), hd=(.25, 0, 0), lid=1, wag=0, tail=(-.3, 0),
+            FL=('a', -.9, .7, .9, .2), FR=('a', -.9, .7, .9, .2), HL=('a', 1.0, .6, -.6, .5), HR=('a', 1.0, .6, -.6, .5))
+
+
+def sway(a=.01, f=.5, k="roll"):
+    def m(s, t):
+        s[k] += a * np.sin(2 * np.pi * f * t); return s
+    return m
+
+
+def chain(*ms):
+    def m(s, t):
+        for x in ms: s = x(s, t)
+        return s
+    return m
+
+
+def osc(key, amp, f, ph=0., idx=None):
+    def m(s, t):
+        v = amp * np.sin(2 * np.pi * (f * t + ph))
+        if idx is None: s[key] += v
+        else:
+            l = list(s[key]); l[idx] += v; s[key] = tuple(l)
+        return s
+    return m
+
+
+for nm, p in (("stand", STAND), ("sit", SIT), ("down", DOWN), ("rest", REST_), ("sploot", SPLOOT), ("side", SIDE), ("curl", CURL),
+              ("belly", BELLY), ("beg", BEG), ("hind", HIND), ("held", HELD), ("newborn", NEWBORN)):
+    hold(nm, p, 2.0, tag="pose")
+hold("sit_lazy", S(SIT, roll=.16, dx=-.012, sp=(.1, .12, 0), HL=(.05, .012, .13, -1.3), HR=(-.01, .012, .10, -1.3)), tag="pose")
+hold("down_alert", S(DOWN, nk=(-.45, 0, 0), hd=(.3, 0, 0), ear=(.25, -.1), wag=.2), tag="pose")
+hold("sleep_side", S(SIDE, lid=1, hd=(.2, 0, 0)), 4.0, tag="pose")
+hold("sleep_belly", S(BELLY, lid=1, jaw=.08), 4.0, tag="pose")
+
+
+def trans(a, b, pa, pb, dur, mids=(), ev=()):
+    ks = [(0, pa)] + [(dur * f, m) for f, m in mids] + [(dur, pb)]
+    clip(f"{a}>{b}", ks, events=ev, tag="trans")
+
+
+trans("stand", "sit", STAND, SIT, .7, [(.45, S(SIT, dy=-.05, pitch=-.4, dz=.02))])
+trans("sit", "stand", SIT, STAND, .6, [(.5, S(STAND, dy=-.03, pitch=-.2, dz=.015))])
+trans("sit", "down", SIT, DOWN, .8, [(.5, S(DOWN, dy=-.085, pitch=-.3, dz=.01, FL=(.004, .0, .05, -.6), FR=(.004, .0, .05, -.6)))], [(.7, "thump")])
+trans("down", "sit", DOWN, SIT, .8, [(.5, S(SIT, dy=-.09, pitch=-.3, dz=.015))])
+trans("stand", "down", STAND, DOWN, .9, [(.4, S(BOW, pitch=.3, wag=.3, nk=(-.3, 0, 0))), (.75, S(DOWN, dy=-.07, pitch=.1))], [(.8, "thump")])
+trans("down", "stand", DOWN, STAND, .8, [(.4, S(DOWN, dy=-.06, pitch=-.2, FL=(0, 0, .02, 0), FR=(0, 0, .02, 0))), (.75, S(STAND, dy=-.02, pitch=.06))])
+trans("down", "rest", DOWN, REST_, .8)
+trans("rest", "down", REST_, DOWN, .6)
+trans("down", "sploot", DOWN, SPLOOT, .8)
+trans("sploot", "down", SPLOOT, DOWN, .8)
+trans("down", "side", DOWN, SIDE, 1.0, [(.5, S(DOWN, roll=.7, dy=-.104, dx=-.01))], [(.75, "thump")])
+trans("side", "down", SIDE, DOWN, 1.0, [(.5, S(DOWN, roll=.7, dy=-.104, dx=-.01))])
+trans("down", "curl", DOWN, CURL, 1.2)
+trans("curl", "down", CURL, DOWN, 1.0)
+trans("side", "belly", SIDE, BELLY, .9, [(.5, S(BELLY, roll=2.2))])
+trans("belly", "side", BELLY, SIDE, .8, [(.5, S(SIDE, roll=2.2))])
+trans("sit", "beg", SIT, BEG, .6)
+trans("beg", "sit", BEG, SIT, .5)
+trans("stand", "hind", STAND, HIND, .5, [(.4, S(CROUCH, pitch=-.25))])
+trans("hind", "stand", HIND, STAND, .45, ev=[(.38, "step")])
+trans("stand", "bow", STAND, BOW, .35)
+trans("bow", "stand", BOW, STAND, .35)
+
+
+# ---------------- 걸음 ----------------
+def gait(T, stride, duty, offs, lift, bob=0., pitchA=0., rollA=0., spineA=0., fp=.55, yawA=0., headA=0., nb=2, wide=0.):
+    def m(s, t):
+        for leg in LEGS:
+            ph = (t / T + offs[leg]) % 1
+            base = s[leg]
+            if ph < duty:
+                z = stride / 2 - stride * ph / duty; y = 0; p = .12 * (ph / duty - .5)
+            else:
+                u = (ph - duty) / (1 - duty)
+                z = -stride / 2 + stride * (.5 - .5 * np.cos(np.pi * u)); y = lift * np.sin(np.pi * u) ** .8
+                p = fp * np.sin(2 * np.pi * u) * (1 if u < .5 else .45)
+            s[leg] = (base[0] + wide, base[1] + y, base[2] + z, base[3] + p)
+        w = 2 * np.pi * t / T
+        s["dy"] += bob * np.cos(nb * w)
+        s["pitch"] += pitchA * np.sin(w * (nb / 2) + .6)
+        s["roll"] += rollA * np.sin(w)
+        s["yaw"] += yawA * np.sin(w)
+        s["sp"] = (s["sp"][0] + spineA * np.sin(w * (nb / 2)), s["sp"][1] - yawA * 1.5 * np.sin(w), s["sp"][2])
+        s["nk"] = (s["nk"][0] - pitchA * .8 * np.sin(w * (nb / 2) + .6), s["nk"][1], s["nk"][2] - rollA * .6 * np.sin(w))
+        s["hd"] = (s["hd"][0] + headA * np.sin(nb * w + 1.), s["hd"][1], s["hd"][2])
+        return s
+    return m
+
+
+def steps(T, offs, n=1):
+    ev = []
+    for k in range(n):
+        for leg in LEGS:
+            ev.append((((1 - offs[leg]) % 1 + k) * T % (T * n), "step"))
+    return sorted(ev)
+
+
+LAT = dict(HL=0, FL=.25, HR=.5, FR=.75)
+TROT = dict(FL=0, HR=.03, FR=.5, HL=.53)
+GAL = dict(HL=0, HR=.09, FL=.42, FR=.52)
+BND = dict(HL=0, HR=.03, FL=.45, FR=.48)
+
+
+def loco(name, base, T, stride, duty, offs, **kw):
+    g = gait(T, stride, duty, offs, **{k: v for k, v in kw.items() if k not in ("tag", "extra")})
+    m = chain(g, kw["extra"]) if "extra" in kw else g
+    clip(name, [(0, base), (T, base)], loop=True, speed=stride / (duty * T), mod=m, events=steps(T, offs), tag="loco", lin=True)
+
+
+loco("walk", S(tail=(.05, 0), wag=.35), .46, .105, .62, LAT, lift=.018, bob=.0025, rollA=.025, yawA=.03, headA=.02)
+loco("walk_sniff", S(pitch=.1, nk=(.75, 0, 0), hd=(.5, 0, 0), tail=(-.2, 0), wag=.25), .56, .085, .66, LAT, lift=.014, bob=.002, rollA=.02, yawA=.035,
+     extra=osc("hd", .12, 3.2, idx=1))
+loco("walk_senior", S(dy=-.006, pitch=.04, nk=(.22, 0, 0), sp=(.06, 0, 0), tail=(-.7, -.3), wag=.12), .68, .075, .7, LAT, lift=.01, bob=.002, rollA=.035, yawA=.02, headA=.03, fp=.3)
+loco("stalk", S(dy=-.035, pitch=.06, nk=(.1, 0, 0), hd=(-.1, 0, 0), tail=(-.6, -.2), wag=.1, ear=(.2, -.1)), 1.1, .07, .78, LAT, lift=.012, rollA=.01)
+loco("backup", S(dy=-.008, nk=(-.1, 0, 0), tail=(-.4, 0)), .5, -.06, .64, LAT, lift=.014, bob=.002, rollA=.02)
+loco("trot", S(nk=(-.06, 0, 0), tail=(.1, 0), wag=.5), .33, .15, .46, TROT, lift=.026, bob=.006, pitchA=.012, rollA=.012, headA=.03)
+loco("prance", S(nk=(-.3, 0, 0), hd=(.18, 0, 0), tail=(.25, .1), wag=1, ear=(.2, 0)), .36, .12, .44, TROT, lift=.04, bob=.01, pitchA=.02, rollA=.02, headA=.05, fp=.9)
+loco("run", S(dy=-.008, nk=(.1, 0, 0), hd=(-.12, 0, 0), tail=(-.5, -.3), ear=(.5, .5), wag=.2), .29, .30, .30, GAL, lift=.04, bob=.014, pitchA=.11, spineA=.22, nb=1, fp=.9)
+loco("bound", S(nk=(-.1, 0, 0), tail=(.1, 0), ear=(.4, .3), wag=.7), .36, .16, .36, BND, lift=.045, bob=.02, pitchA=.16, spineA=.16, nb=1, fp=.8)
+loco("toddle", S(dy=-.012, nk=(.1, 0, 0), tail=(-.3, 0), wag=.5), .6, .06, .7, LAT, lift=.012, bob=.004, rollA=.07, yawA=.07, headA=.06, wide=.01,
+     extra=chain(osc("roll", .03, .7), osc("yaw", .05, .45, .3)))
+loco("crawl", S(NEWBORN, dy=-.10, FL=(.035, .012, .04, -1.2), FR=(.035, .012, .04, -1.2), HL=(.04, .012, .09, -1.2), HR=(.04, .012, .09, -1.2)),
+     1.5, .028, .7, LAT, lift=.006, rollA=.06, yawA=.14, wide=0., extra=chain(osc("hd", .25, .66, idx=1), osc("nk", .12, 1.33, idx=0)))
+loco("army", S(DOWN, dy=-.096, nk=(-.2, 0, 0), wag=.8, tail=(-.3, 0)), .7, .05, .7, LAT, lift=.008, rollA=.05, yawA=.06)
+
+
+def turn(name, ang, T=.55):
+    def m(s, t):
+        u = ease(min(1, t / T))
+        s["yaw"] = ang * u
+        k = np.sin(np.pi * min(1, t / T))
+        for i, leg in enumerate(LEGS):
+            l = list(s[leg]); l[1] += .012 * k * abs(np.sin(np.pi * (t / T * 2 + i * .5))); s[leg] = tuple(l)
+        s["nk"] = (0, ang * .25 * (1 - u), 0); s["sp"] = (0, -ang * .12 * k, 0)
+        return s
+    clip(name, [(0, STAND), (T, STAND)], mod=m, events=[(.12, "step"), (.3, "step"), (.45, "step")], tag="turn", lin=True)
+
+
+turn("turn_l", np.pi / 2); turn("turn_r", -np.pi / 2); turn("turn_back", np.pi, .8)
+
+
+# ---------------- 서서 하는 동작 ----------------
+def shake_mod(amp=.32, f=7.5, dur=1.3):
+    def m(s, t):
+        k = np.sin(np.pi * min(1, t / dur)) ** .7
+        a = amp * k * np.sin(2 * np.pi * f * t)
+        s["roll"] += a * .35; s["sp"] = (s["sp"][0], 0, a * .8); s["ch"] = (s["ch"][0], 0, a * 1.2 * np.sin(2 * np.pi * f * t + .8) / max(1e-3, abs(np.sin(2 * np.pi * f * t)) + .3))
+        s["hd"] = (s["hd"][0], 0, 1.6 * amp * k * np.sin(2 * np.pi * f * t + 1.2)); s["ear"] = (.9 * k, 0); s["lid"] = .8 * k; s["tail"] = (s["tail"][0], s["tail"][1])
+        return s
+    return m
+
+
+clip("shake", [(0, STAND), (.15, S(dy=-.008, FL=(.012, 0, 0, 0), FR=(.012, 0, 0, 0), HL=(.012, 0, 0, 0), HR=(.012, 0, 0, 0))), (1.3, S(dy=-.008, FL=(.012, 0, 0, 0), FR=(.012, 0, 0, 0), HL=(.012, 0, 0, 0), HR=(.012, 0, 0, 0))), (1.6, STAND)],
+     mod=shake_mod(), events=[(.2, "shake")], tag="act")
+clip("shake_sit", [(0, SIT), (1.3, SIT), (1.5, SIT)], mod=shake_mod(.26, 8, 1.3), events=[(.1, "shake")], tag="act")
+seq("stretch_front", [(0, STAND), (.7, S(BOW, pitch=.5, wag=.2, nk=(-.6, 0, 0), FL=(.0, .014, .13, -1.35), FR=(.0, .014, .13, -1.35), jaw=.0)), (1.2, S(BOW, pitch=.52, wag=.2, nk=(-.7, 0, 0), jaw=.5, lid=.9, FL=(.0, .014, .135, -1.35), FR=(.0, .014, .135, -1.35))), (.6, STAND)], tag="act")
+seq("stretch_back", [(0, STAND), (.7, S(pitch=-.22, dz=.04, dy=-.004, nk=(-.3, 0, 0), HL=(0, .0, -.075, .75), HR=(0, 0, -.06, .5), tail=(-.6, -.3))), (.9, S(pitch=-.25, dz=.045, nk=(-.4, 0, 0), HL=(0, .008, -.085, .9), HR=(0, 0, -.06, .5), tail=(-.6, -.3))), (.5, STAND)], tag="act")
+clip("bow_wiggle", [(0, BOW), (1.6, BOW)], loop=True, mod=chain(osc("sp", .14, 3.2, idx=1), osc("yaw", .05, 3.2, .25), osc("hd", .12, 1.6, idx=2)), tag="act")
+seq("pounce", [(0, CROUCH), (.22, S(CROUCH, dy=-.055, pitch=.12, wag=.8)), (.16, S(dy=.05, pitch=-.3, dz=.06, FL=(0, .07, .08, -.5), FR=(0, .07, .08, -.5), HL=(0, .02, -.04, .6), HR=(0, .02, -.04, .6), ear=(.5, .4))),
+               (.16, S(dy=.01, pitch=.35, dz=.12, FL=(0, 0, .14, -.1), FR=(0, 0, .14, -.1), HL=(0, .04, .02, .5), HR=(0, .04, .02, .5))), (.18, S(BOW, dz=.12, HL=(0, 0, .12, 0), HR=(0, 0, .12, 0), FL=(.012, .014, .22, -1.3), FR=(.012, .014, .22, -1.3)))],
+    events=[(.38, "step"), (.56, "thump")], speed=0, tag="act")
+seq("hop", [(0, STAND), (.14, S(CROUCH, dy=-.03)), (.14, S(dy=.05, FL=(0, .03, 0, .3), FR=(0, .03, 0, .3), HL=(0, .035, 0, .4), HR=(0, .035, 0, .4), ear=(.5, 0))), (.16, S(CROUCH, dy=-.02)), (.14, STAND)], events=[(.42, "step")], tag="act")
+seq("jump_up", [(0, STAND), (.22, S(CROUCH, dy=-.06, pitch=-.2, nk=(-.4, 0, 0))), (.2, S(dy=.09, pitch=-.75, dz=.05, FL=('a', -.9, .05, 1.2, .6), FR=('a', -.9, .05, 1.2, .6), HL=(0, .03, -.05, .8), HR=(0, .03, -.05, .8), ear=(.4, .4))),
+               (.22, S(dy=.2, pitch=-.2, dz=.14, FL=('a', -.7, .05, .6, .2), FR=('a', -.7, .05, .6, .2), HL=('a', .2, .1, -1.2, .4), HR=('a', .2, .1, -1.2, .4))), (.2, S(dy=.0, dz=.0))], events=[(.2, "step"), (.8, "thump")], tag="jump")
+seq("jump_down", [(0, STAND), (.2, S(pitch=.35, dy=-.03, nk=(-.3, 0, 0), FL=(0, 0, .03, 0), FR=(0, 0, .03, 0))), (.2, S(pitch=.6, dy=.02, dz=.08, FL=('a', -1.0, .05, .4, .2), FR=('a', -1.0, .05, .4, .2), HL=(0, .02, -.05, .7), HR=(0, .02, -.05, .7), ear=(.6, 0))),
+                 (.2, S(pitch=.25, dy=-.03, dz=.02, nk=(-.3, 0, 0), HL=('a', .3, .1, -1.0, .4), HR=('a', .3, .1, -1.0, .4))), (.2, S(CROUCH, dy=-.03)), (.15, STAND)], events=[(.6, "thump"), (.75, "step")], tag="jump")
+clip("greet_jump", [(0, HIND), (.9, HIND)], loop=True, mod=chain(lambda s, t: dict(s, dy=s["dy"] + .03 * abs(np.sin(np.pi * t / .3)), FL=('a', -.7 + .5 * np.sin(2 * np.pi * t / .3), .05, 1.2, .8), FR=('a', -.7 + .5 * np.sin(2 * np.pi * t / .3 + 2.2), .05, 1.2, .8)), osc("sp", .08, 3.3, idx=1)),
+     events=[(.3, "step"), (.6, "step"), (.89, "step")], tag="act")
+clip("hind_paw", [(0, HIND), (1.2, HIND)], loop=True, mod=lambda s, t: dict(s, FL=('a', -.9 + .45 * np.sin(2 * np.pi * t / .4), .05, 1.2, .8), FR=('a', -.9 + .45 * np.sin(2 * np.pi * t / .4 + np.pi), .05, 1.2, .8), dx=.006 * np.sin(2 * np.pi * t / 1.2)), tag="act")
+clip("dig", [(0, S(BOW, pitch=.3, wag=.5, nk=(.2, 0, 0), hd=(.3, 0, 0))), (1.2, S(BOW, pitch=.3, wag=.5, nk=(.2, 0, 0), hd=(.3, 0, 0)))], loop=True,
+     mod=lambda s, t: dict(s, FL=(.0, .02 + .02 * max(0, np.sin(2 * np.pi * t / .24)), .05 + .04 * np.cos(2 * np.pi * t / .24), -.6), FR=(.0, .02 + .02 * max(0, np.sin(2 * np.pi * t / .24 + np.pi)), .05 + .04 * np.cos(2 * np.pi * t / .24 + np.pi), -.6)),
+     events=[(i * .12, "scratch") for i in range(10)], tag="act")
+hold("sniff_ground", S(pitch=.12, nk=(.85, 0, 0), hd=(.55, 0, 0), tail=(-.2, 0), wag=.3), 2.4, mod=chain(osc("hd", .16, 1.25, idx=1), osc("nk", .05, 3.3, idx=0), osc("dz", .004, .8)), events=[(.3, "sniff"), (1.1, "sniff"), (1.9, "sniff")], tag="act")
+EAT = S(pitch=.1, nk=(.8, 0, 0), hd=(.42, 0, 0), tail=(-.1, 0), wag=.5)
+hold("eat", EAT, 1.6, mod=chain(osc("hd", .09, 2.5, idx=0), osc("jaw", .16, 5, .25), lambda s, t: dict(s, jaw=abs(s["jaw"]))), events=[(.0, "chomp"), (.4, "chomp"), (.8, "chomp"), (1.2, "chomp")], tag="act")
+hold("drink", S(EAT, nk=(.86, 0, 0), wag=.2), 1.2, mod=lambda s, t: dict(s, jaw=.14, tongue=.5 + .5 * np.sin(2 * np.pi * t / .3), hd=(s["hd"][0] + .03 * np.sin(2 * np.pi * t / .3), 0, 0)), events=[(.075 + i * .3, "lap") for i in range(4)], tag="act")
+hold("pee_squat", S(dy=-.045, pitch=-.28, dz=.01, nk=(-.1, 0, 0), tail=(.35, 0), wag=0, HL=(.03, 0, .02, -.3), HR=(.03, 0, .02, -.3)), 2.0, tag="act")
+hold("pee_leg", S(roll=-.12, yaw=.0, tail=(.2, 0), wag=0, HL=('a', -.5, 1.0, -.9, .3)), 2.0, tag="act")
+hold("poop", S(dy=-.04, pitch=-.42, dz=.03, sp=(.45, 0, 0), ch=(.2, 0, 0), nk=(-.2, 0, 0), tail=(.5, .2), wag=0, HL=(.03, 0, .06, -.4), HR=(.03, 0, .06, -.4), ear=(.2, .2)), 2.0, mod=osc("dy", .003, 1.), tag="act")
+clip("kick_back", [(0, STAND), (1.2, STAND)], mod=lambda s, t: dict(s, HL=(0, .02 * max(0, np.sin(2 * np.pi * t / .3)), -.05 * np.sin(2 * np.pi * t / .3) ** 2, .5 * max(0, np.sin(2 * np.pi * t / .3))),
+     HR=(0, .02 * max(0, np.sin(2 * np.pi * t / .3 + np.pi)), -.05 * np.sin(2 * np.pi * t / .3 + np.pi) ** 2, .5 * max(0, np.sin(2 * np.pi * t / .3 + np.pi))), tail=(.2, 0)), events=[(i * .15 + .07, "scratch") for i in range(8)], tag="act")
+seq("startle", [(0, STAND), (.1, S(dy=.02, dz=-.03, pitch=-.1, nk=(-.3, 0, 0), ear=(.5, -.2), tail=(-.8, -.4), wag=0)), (.15, S(CROUCH, dz=-.06, nk=(-.25, 0, 0), ear=(.3, .3), tail=(-1.2, -.6), wag=0)), (.6, S(CROUCH, dy=-.02, dz=-.06, tail=(-.9, -.4), wag=0)), (.4, STAND)], events=[(.25, "step")], tag="act")
+hold("cower", S(dy=-.05, pitch=.05, nk=(.25, 0, 0), hd=(-.25, 0, 0), ear=(.1, .5), tail=(-2.3, -.6), wag=.05, lid=.2), 2.0, mod=osc("dy", .0015, 9), tag="act")
+hold("alert", S(dy=.004, nk=(-.3, 0, 0), hd=(.2, 0, 0), ear=(.35, -.2), tail=(.3, .15), wag=.05), 2.0, tag="act")
+seq("bark_body", [(0, STAND), (.08, S(dz=.012, pitch=-.05, FL=(0, .012, .01, 0), FR=(0, .012, .01, 0), tail=(.25, 0))), (.1, S(dz=.004)), (.2, STAND)], events=[(.1, "step")], tag="act")
+seq("paw_at", [(0, STAND), (.2, S(roll=.06, FR=(.0, .06, .06, -.7))), (.14, S(roll=.06, FR=(.0, .02, .10, -.2))), (.14, S(roll=.06, FR=(0, .06, .06, -.7))), (.14, S(roll=.06, FR=(0, .02, .10, -.2))), (.2, STAND)], events=[(.34, "pat"), (.62, "pat")], tag="act")
+seq("nose_push", [(0, STAND), (.25, S(pitch=.12, nk=(.8, 0, 0), hd=(.3, 0, 0))), (.12, S(pitch=.14, dz=.02, nk=(.7, 0, 0), hd=(.1, 0, 0))), (.3, STAND)], events=[(.37, "pat")], tag="act")
+clip("shake_toy", [(0, S(nk=(.2, 0, 0), jaw=.25, ear=(.5, 0), wag=.8)), (1.2, S(nk=(.2, 0, 0), jaw=.25, ear=(.5, 0), wag=.8))], loop=True, mod=chain(osc("nk", .5, 6, idx=1), osc("hd", .5, 6, .2, idx=2), osc("ch", .1, 6, .4, idx=1)), events=[(.0, "shake")], tag="act")
+clip("tug", [(0, S(CROUCH, dz=-.03, pitch=-.12, nk=(.15, 0, 0), jaw=.22, wag=.6, tail=(.1, 0))), (1.0, S(CROUCH, dz=-.03, pitch=-.12, nk=(.15, 0, 0), jaw=.22, wag=.6, tail=(.1, 0)))], loop=True, mod=chain(osc("dz", .012, 3), osc("nk", .22, 4, idx=1), osc("hd", .2, 4, .25, idx=2)), tag="act")
+clip("wiggle", [(0, S(wag=1)), (1.2, S(wag=1))], loop=True, mod=chain(osc("sp", .2, 3.3, idx=1), osc("yaw", .07, 3.3, .5), osc("ch", .1, 3.3, .25, idx=1), osc("hd", .1, 3.3, idx=2)), tag="act")
+seq("look_back", [(0, STAND), (.4, S(sp=(0, .25, 0), ch=(0, .3, 0), nk=(0, .8, 0), hd=(0, .7, 0))), (.9, S(sp=(0, .25, 0), ch=(0, .3, 0), nk=(0, .8, 0), hd=(0, .7, .1))), (.4, STAND)], tag="act")
+
+
+def spin(name, sgn):
+    T = .9
+    def m(s, t):
+        s["yaw"] = sgn * 2 * np.pi * (t / T); s["sp"] = (0, sgn * .45, 0); s["ch"] = (0, sgn * .3, 0); s["nk"] = (.1, sgn * .7, 0); s["hd"] = (.1, sgn * .4, 0)
+        for i, leg in enumerate(LEGS):
+            l = list(s[leg]); l[1] += .016 * abs(np.sin(np.pi * (t / T * 4 + i * .5))); s[leg] = tuple(l)
+        return s
+    clip(name, [(0, S(wag=.6)), (T, S(wag=.6))], loop=True, mod=m, events=[(i * .11, "step") for i in range(8)], tag="act", lin=True)
+
+
+spin("spin_l", 1); spin("spin_r", -1)
+# 강아지 (3~7주): 비틀거림·넘어짐
+seq("wobble", [(0, S(dy=-.012, wag=.4)), (.5, S(dy=-.014, roll=.12, yaw=.08, FL=(.012, 0, 0, 0), HR=(.012, 0, 0, 0))), (.5, S(dy=-.012, roll=-.1, yaw=-.06, FR=(.014, 0, .01, 0))), (.5, S(dy=-.012, wag=.4))], loop=True, tag="pup")
+seq("tumble", [(0, S(dy=-.012)), (.25, S(dy=-.03, pitch=.3, roll=.15, FL=(.02, 0, -.02, 0), FR=(0, .01, .03, -.4))), (.3, S(DOWN, roll=.9, pitch=.2, dy=-.10, dx=-.02)), (.35, S(SIDE, roll=1.5)), (.5, S(SIDE)), (.5, S(DOWN, roll=.3)), (.5, S(dy=-.012))], events=[(.5, "thump")], tag="pup")
+seq("plop", [(0, S(dy=-.012)), (.35, S(SIT, dy=-.08, roll=.1)), (.2, S(SIT, dy=-.092, roll=.14, nk=(.3, 0, 0))), (.6, S(SIT, roll=.12))], events=[(.5, "thump")], tag="pup")
+# 갓난 강아지 (0~2주): 눈 감고 꼬물거림
+hold("nb_squirm", NEWBORN, 2.4, mod=chain(osc("yaw", .12, .42), osc("hd", .35, .83, idx=1), osc("nk", .15, 1.25, idx=0), osc("roll", .06, .6, .3),
+     lambda s, t: dict(s, FL=('a', -.9 + .3 * np.sin(2 * np.pi * t / 1.2), .7, .9, .2), HR=('a', 1.0 + .25 * np.sin(2 * np.pi * t / 1.2 + 1), .6, -.6, .5))), tag="nb")
+hold("nb_root", S(NEWBORN, nk=(-.1, 0, 0), hd=(-.1, 0, 0)), 1.6, mod=chain(osc("hd", .45, 1.25, idx=1), osc("nk", .22, 2.5, idx=0), osc("jaw", .06, 5)), tag="nb")
+hold("nb_nurse", S(NEWBORN, nk=(-.35, 0, 0), hd=(-.3, 0, 0), jaw=.1), 1.2, mod=chain(osc("nk", .05, 3.33, idx=0), lambda s, t: dict(s, jaw=.08 + .05 * np.sin(2 * np.pi * t / .3),
+     FL=('a', -.9 + .35 * np.sin(2 * np.pi * t / .6), .6, .9, .2), FR=('a', -.9 + .35 * np.sin(2 * np.pi * t / .6 + np.pi), .6, .9, .2))), events=[(i * .3, "suck") for i in range(4)], tag="nb")
+hold("nb_sleep", S(NEWBORN, roll=.5, nk=(.4, .3, 0)), 4.0, mod=lambda s, t: dict(s, HL=('a', 1.0 + (.25 * np.sin(2 * np.pi * t / .25) if 1.2 < t < 1.7 else 0), .6, -.6, .5), jaw=(.06 if 2.6 < t < 2.9 else 0)), tag="nb")
+# 노견
+seq("senior_rise", [(0, DOWN), (.9, S(DOWN, dy=-.085, pitch=-.25, FL=(0, 0, .03, 0), FR=(0, 0, .03, 0))), (.7, S(DOWN, dy=-.08, pitch=-.3, FL=(0, 0, .02, 0), FR=(0, 0, .02, 0))), (1.0, S(dy=-.03, pitch=.1, HL=(0, 0, .03, 0), HR=(.01, 0, .02, 0))), (.6, S(dy=-.006, nk=(.2, 0, 0)))], tag="senior")
+seq("senior_down", [(0, STAND), (.8, S(dy=-.03, pitch=.15, nk=(.2, 0, 0))), (.9, S(DOWN, dy=-.07, pitch=.22, HL=(0, 0, .03, 0), HR=(0, 0, .03, 0))), (.9, DOWN)], events=[(2.2, "thump")], tag="senior")
+hold("doze_sit", S(SIT, lid=.85), 4.0, mod=lambda s, t: dict(s, nk=(.14 + .45 * ease(min(1, t / 2.6)) * (1 if t < 2.7 else max(0, 1 - (t - 2.7) / .25)), 0, 0), lid=.85 if t < 2.7 or t > 3.3 else .2), tag="senior")
+
+# ---------------- 앉아서 ----------------
+def scratch(name, sgn):
+    leg = "HL" if sgn > 0 else "HR"
+    base = S(SIT, roll=-sgn * .14, sp=(.1, sgn * .2, 0), nk=(.3, sgn * .5, 0), hd=(.3, sgn * .3, sgn * .5), lid=.6, ear=(.3, 0), wag=0)
+    def m(s, t):
+        s[leg] = ('a', -1.9 + .28 * np.sin(2 * np.pi * t / .14), .55, -1.0, .2 + .5 * np.sin(2 * np.pi * t / .14 + 1))
+        s["hd"] = (s["hd"][0], s["hd"][1], s["hd"][2] + .05 * np.sin(2 * np.pi * t / .14))
+        return s
+    seq(name, [(0, SIT), (.4, base), (1.7, base), (.4, SIT)], mod=lambda s, t: m(s, t) if .4 < t < 2.1 else s, events=[(.45 + i * .14, "scratch") for i in range(11)], tag="act")
+
+
+scratch("scratch_l", 1); scratch("scratch_r", -1)
+clip("beg_paws", [(0, BEG), (1.0, BEG)], loop=True, mod=lambda s, t: dict(s, FL=('a', -.9 + .35 * np.sin(2 * np.pi * t / .5), .05, 1.5, 1.1), FR=('a', -.9 + .35 * np.sin(2 * np.pi * t / .5 + .6), .05, 1.5, 1.1), dy=s["dy"] + .004 * np.sin(2 * np.pi * t)), tag="act")
+for nm, leg, sgn in (("paw_l", "FL", 1), ("paw_r", "FR", -1)):
+    up = S(SIT, roll=-sgn * .07, wag=.6, **{leg: ('a', -1.25, .05, .55, .5)})
+    seq(nm, [(0, SIT), (.35, up), (1.2, S(up, hd=(.1, 0, 0))), (.35, SIT)], tag="trick")
+    hi = S(BEG, roll=-sgn * .05, wag=.8, **{leg: ('a', -1.75, .35, .5, -.3)})
+    seq("five_" + nm[-1], [(0, SIT), (.35, BEG), (.2, hi), (.5, hi), (.2, BEG), (.3, SIT)], events=[(.6, "pat")], tag="trick")
+hold("lean", S(SIT, roll=.2, dx=.015, nk=(.1, 0, .25), hd=(.1, 0, .2), lid=.5, wag=.5), 2.0, tag="pet")
+# ---------------- 엎드려·누워서 ----------------
+hold("chew", S(DOWN, nk=(.25, 0, 0), hd=(.4, 0, .25), FL=(-.012, .02, .085, -1.45), FR=(-.012, .02, .085, -1.45), wag=.3), 1.6, mod=chain(osc("jaw", .16, 2.5, .25), lambda s, t: dict(s, jaw=abs(s["jaw"])), osc("hd", .1, 1.25, idx=2), osc("hd", .04, 2.5, idx=0)),
+     events=[(.0, "chew"), (.4, "chew"), (.8, "chew"), (1.2, "chew")], tag="act")
+hold("lick_paw", S(DOWN, nk=(.4, -.25, 0), hd=(.45, -.1, 0), FR=(-.01, .03, .075, -1.3), jaw=.1, wag=0), 1.2, mod=lambda s, t: dict(s, tongue=.5 + .5 * np.sin(2 * np.pi * t / .4), hd=(.45 + .08 * np.sin(2 * np.pi * t / .4), -.1, 0)), events=[(.1, "lick"), (.5, "lick"), (.9, "lick")], tag="act")
+seq("roll_over", [(0, DOWN), (.3, S(DOWN, roll=.9, dx=-.01)), (.25, S(SIDE)), (.3, S(BELLY, roll=3.14)), (.3, S(SIDE, roll=4.86, dx=.02)), (.25, S(DOWN, roll=5.5)), (.25, S(DOWN, roll=6.283))], events=[(.5, "thump")], tag="trick")
+hold("belly_wriggle", BELLY, 1.6, mod=chain(osc("sp", .25, 1.9, idx=1), osc("roll", .22, 1.9, .25), osc("yaw", .1, 1.9), lambda s, t: dict(s, HL=('a', -.9 + .4 * np.sin(2 * np.pi * t / .5), .5, -1.3, .6), HR=('a', -.7 + .4 * np.sin(2 * np.pi * t / .5 + 2), .5, -1.4, .6), jaw=.2, tongue=.3, wag=.8)), tag="act")
+hold("belly_rub", S(BELLY, lid=.7, jaw=.15, tongue=.4, wag=.6), 1.2, mod=lambda s, t: dict(s, HL=('a', -.9 + .5 * np.sin(2 * np.pi * t / .2), .5, -1.3 - .3 * np.sin(2 * np.pi * t / .2), .6), FL=('a', -.7, .3, 1.5 + .1 * np.sin(2 * np.pi * t / .6), .9)), tag="pet")
+hold("dream", S(SIDE, lid=1), 3.0, mod=lambda s, t: dict(s, FL=('a', -.75 + (.22 * np.sin(2 * np.pi * t / .22) if .6 < t < 1.5 else 0), .1, .5, .3 + (.3 * np.sin(2 * np.pi * t / .22 + 1) if .6 < t < 1.5 else 0)),
+     HL=('a', -.55 + (.2 * np.sin(2 * np.pi * t / .22 + 2) if .8 < t < 1.7 else 0), .1, .5, -.2), jaw=(.07 if 1.0 < t < 1.2 or 1.4 < t < 1.55 else 0), ear=(.15 * (1 if 2.0 < t < 2.1 else 0), 0), lid=1 - (.12 if 1.1 < t < 1.6 else 0)), events=[(1.0, "whimper")], tag="sleep")
+seq("side_stretch", [(0, SIDE), (.8, S(SIDE, sp=(-.2, 0, 0), nk=(-.3, 0, -.1), FL=('a', -1.2, .1, .1, -.3), FR=('a', -1.0, .05, .1, -.3), HL=('a', .25, .1, .1, .5), HR=('a', .4, .05, .1, .5), jaw=.3, lid=1)), (.9, S(SIDE, sp=(-.22, 0, 0), nk=(-.35, 0, -.1), FL=('a', -1.25, .1, .05, -.3), FR=('a', -1.05, .05, .05, -.3), HL=('a', .3, .1, .05, .5), HR=('a', .45, .05, .05, .5), jaw=.45, lid=1)), (.7, SIDE)], tag="act")
+seq("wake", [(0, S(REST_, lid=1)), (.6, S(REST_, lid=.5)), (.6, S(DOWN, lid=.3, nk=(-.1, 0, 0))), (.5, S(DOWN, lid=0))], tag="sleep")
+hold("sleep_rest", S(REST_, lid=1, hd=(.2, 0, .15)), 4.0, tag="pose")
+hold("sleep_curl", CURL, 4.0, tag="pose")
+# 안겼을 때 버둥
+hold("held_wiggle", HELD, 1.2, mod=lambda s, t: dict(s, HL=('a', -.5 + .35 * np.sin(2 * np.pi * t / .4), .1, -.5, .2), HR=('a', -.4 + .35 * np.sin(2 * np.pi * t / .4 + np.pi), .1, -.6, .2), sp=(.15, .1 * np.sin(2 * np.pi * t / .6), 0), wag=.9), tag="held")
+hold("held_calm", S(HELD, lid=.4, nk=(.2, 0, 0), wag=.4), 2.0, tag="held")
+# 쓰다듬을 때
+hold("pet_head", S(SIT, nk=(.0, 0, 0), hd=(-.12, 0, 0), lid=.75, ear=(.1, .3), wag=.8), 2.0, mod=osc("hd", .05, .8, idx=0), tag="pet")
+hold("pet_back", S(dy=-.01, sp=(-.08, 0, 0), nk=(-.2, 0, 0), hd=(.1, 0, 0), lid=.5, tail=(.25, .1), wag=.9), 2.0, mod=chain(osc("sp", .05, 1., idx=1), osc("dy", .003, 1.)), tag="pet")
+hold("pet_chin", S(SIT, nk=(-.35, 0, 0), hd=(-.3, 0, 0), lid=.8, wag=.7), 2.0, mod=osc("hd", .05, .7, idx=2), tag="pet")
+hold("pet_down", S(DOWN, nk=(.1, 0, 0), hd=(.15, 0, .15), lid=.8, wag=.5), 2.0, tag="pet")
+
+# ---------------- 머리 겹치기 동작 (서 있는 자세 기준 차이만 씀) ----------------
+def head(name, steps, loop=False, mod=None, events=()):
+    t = 0; ks = []
+    for dt, kw in steps:
+        t += dt; ks.append((t, S(**kw)))
+    clip(name, ks, loop=loop, mod=mod, events=events, mask="head", tag="head")
+
+
+head("look_l", [(0, {}), (.3, dict(nk=(0, .45, 0), hd=(0, .4, 0))), (1.0, dict(nk=(0, .45, 0), hd=(0, .4, 0))), (.35, {})])
+head("look_r", [(0, {}), (.3, dict(nk=(0, -.45, 0), hd=(0, -.4, 0))), (1.0, dict(nk=(0, -.45, 0), hd=(0, -.4, 0))), (.35, {})])
+head("look_up", [(0, {}), (.3, dict(nk=(-.35, 0, 0), hd=(-.4, 0, 0))), (1.2, dict(nk=(-.35, 0, 0), hd=(-.4, 0, 0))), (.35, {})])
+head("look_down", [(0, {}), (.3, dict(nk=(.4, 0, 0), hd=(.35, 0, 0))), (.9, dict(nk=(.4, 0, 0), hd=(.35, 0, 0))), (.35, {})])
+head("tilt_l", [(0, {}), (.22, dict(hd=(0, 0, .5), ear=(.3, -.1))), (1.1, dict(hd=(0, 0, .5), ear=(.3, -.1))), (.3, {})])
+head("tilt_r", [(0, {}), (.22, dict(hd=(0, 0, -.5), ear=(.3, -.1))), (1.1, dict(hd=(0, 0, -.5), ear=(.3, -.1))), (.3, {})])
+head("tilt_lr", [(0, {}), (.2, dict(hd=(0, 0, .45), ear=(.3, 0))), (.6, dict(hd=(0, 0, .45), ear=(.3, 0))), (.3, dict(hd=(0, 0, -.45), ear=(.3, 0))), (.7, dict(hd=(0, 0, -.45), ear=(.3, 0))), (.3, {})])
+head("yawn", [(0, {}), (.5, dict(nk=(-.2, 0, 0), hd=(-.25, 0, 0), jaw=.55, lid=.9, tongue=.25, ear=(.1, .3))), (.7, dict(nk=(-.3, 0, 0), hd=(-.35, 0, .08), jaw=.85, lid=1, tongue=.5, ear=(.1, .4))), (.35, dict(nk=(-.1, 0, 0), jaw=.1, lid=.6)), (.3, {})], events=[(.4, "yawn")])
+head("lick_lips", [(0, {}), (.12, dict(jaw=.12, tongue=.9)), (.14, dict(jaw=.1, tongue=1, hd=(0, 0, .06))), (.12, dict(jaw=.05, tongue=.2)), (.12, dict(jaw=.12, tongue=.9)), (.14, dict(jaw=.0, tongue=0))], events=[(.1, "lick")])
+head("pant", [(0, dict(jaw=.32, tongue=.8, lid=.15)), (.4, dict(jaw=.32, tongue=.8, lid=.15))], loop=True, mod=chain(osc("jaw", .05, 5), osc("tongue", .1, 5, .2), osc("nk", .015, 5, idx=0)))
+head("bark", [(0, {}), (.06, dict(nk=(-.18, 0, 0), hd=(-.2, 0, 0), jaw=.5, ear=(.3, .1))), (.1, dict(nk=(-.1, 0, 0), hd=(-.1, 0, 0), jaw=.35)), (.14, {})])
+head("bark2", [(0, {}), (.06, dict(nk=(-.18, 0, 0), hd=(-.2, 0, 0), jaw=.5, ear=(.3, .1))), (.1, dict(nk=(-.08, 0, 0), jaw=.1)), (.07, dict(nk=(-.2, 0, 0), hd=(-.22, 0, 0), jaw=.55, ear=(.3, .1))), (.1, dict(jaw=.3)), (.14, {})])
+head("howl", [(0, {}), (.4, dict(nk=(-.55, 0, 0), hd=(-.6, 0, 0), jaw=.3, lid=.7, ear=(0, .4))), (1.4, dict(nk=(-.6, 0, 0), hd=(-.65, 0, 0), jaw=.22, lid=.8, ear=(0, .4))), (.4, {})])
+head("whine", [(0, {}), (.3, dict(nk=(.15, 0, 0), hd=(-.25, 0, .1), ear=(0, .4), jaw=.06)), (1.0, dict(nk=(.15, 0, 0), hd=(-.25, 0, -.1), ear=(0, .4), jaw=.08)), (.3, {})])
+head("sniff_air", [(0, {}), (.3, dict(nk=(-.3, 0, 0), hd=(-.3, 0, 0))), (1.2, dict(nk=(-.3, 0, 0), hd=(-.3, 0, 0))), (.3, {})], mod=chain(osc("hd", .04, 6, idx=0), osc("hd", .1, .8, idx=1)), events=[(.4, "sniff"), (.9, "sniff")])
+head("sneeze", [(0, {}), (.25, dict(nk=(-.2, 0, 0), hd=(-.2, 0, 0), lid=.6)), (.07, dict(nk=(.35, 0, 0), hd=(.4, 0, 0), lid=1, jaw=.2)), (.2, dict(nk=(.1, 0, 0), lid=.5)), (.25, {})], events=[(.25, "sneeze")])
+head("nod", [(0, {}), (.18, dict(hd=(.3, 0, 0))), (.18, dict(hd=(-.1, 0, 0))), (.18, dict(hd=(.25, 0, 0))), (.2, {})])
+head("shake_head", [(0, {}), (.9, {}), (.1, {})], mod=lambda s, t: dict(s, hd=(0, 0, .9 * np.sin(np.pi * min(1, t / .9)) * np.sin(2 * np.pi * 8 * t)), ear=(.9 * np.sin(np.pi * min(1, t / .9)), 0), lid=.8 * np.sin(np.pi * min(1, t / .9))), events=[(.05, "flap")])
+head("ear_perk", [(0, {}), (.12, dict(ear=(.4, -.25), nk=(-.1, 0, 0))), (.9, dict(ear=(.4, -.25), nk=(-.1, 0, 0))), (.3, {})])
+head("ear_back", [(0, {}), (.2, dict(ear=(.05, .5), lid=.3)), (.9, dict(ear=(.05, .5), lid=.3)), (.3, {})])
+head("chew_head", [(0, dict(jaw=.05)), (.8, dict(jaw=.05))], loop=True, mod=chain(osc("jaw", .12, 2.5), lambda s, t: dict(s, jaw=abs(s["jaw"])), osc("hd", .04, 1.25, idx=2)), events=[(.1, "chomp"), (.5, "chomp")])
+head("lick", [(0, dict(jaw=.12)), (.6, dict(jaw=.12))], loop=True, mod=lambda s, t: dict(s, tongue=.55 + .45 * np.sin(2 * np.pi * t / .3), hd=(-.06 * np.sin(2 * np.pi * t / .3), 0, 0)), events=[(.07, "lick"), (.37, "lick")])
+head("growl", [(0, {}), (.2, dict(nk=(.15, 0, 0), hd=(.05, 0, 0), jaw=.07, ear=(0, .35), lid=.2)), (1.2, dict(nk=(.15, 0, 0), hd=(.05, 0, 0), jaw=.09, ear=(0, .35), lid=.2)), (.3, {})])
+head("sleepy", [(0, {}), (.8, dict(lid=.75, nk=(.12, 0, 0))), (1.0, dict(lid=.9, nk=(.25, 0, 0))), (.2, dict(lid=.3, nk=(.0, 0, 0))), (.4, {})])
+head("blink_slow", [(0, {}), (.35, dict(lid=1)), (.3, dict(lid=1)), (.4, {})])
+head("sniff_hand", [(0, {}), (.25, dict(nk=(-.1, 0, 0), hd=(-.1, 0, 0))), (1.2, dict(nk=(-.1, 0, 0), hd=(-.1, 0, 0))), (.3, {})], mod=chain(osc("hd", .05, 5, idx=0), osc("hd", .08, 1.1, idx=1)), events=[(.3, "sniff"), (.8, "sniff"), (1.3, "sniff")])
+head("nuzzle", [(0, {}), (.3, dict(nk=(.1, 0, .2), hd=(.15, 0, .3), lid=.8)), (.5, dict(nk=(.1, 0, -.2), hd=(.15, 0, -.3), lid=.8)), (.5, dict(nk=(.1, 0, .2), hd=(.15, 0, .3), lid=.8)), (.4, {})])
+head("carry", [(0, dict(jaw=.24, nk=(-.05, 0, 0))), (1.0, dict(jaw=.24, nk=(-.05, 0, 0)))], loop=True)
+head("squeak_bite", [(0, dict(jaw=.3)), (.12, dict(jaw=.12)), (.14, dict(jaw=.3)), (.12, dict(jaw=.12)), (.14, dict(jaw=.26))], events=[(.12, "squeak"), (.38, "squeak")])
+head("nibble", [(0, dict(jaw=.1)), (.6, dict(jaw=.1))], loop=True, mod=chain(osc("jaw", .1, 6), lambda s, t: dict(s, jaw=abs(s["jaw"])), osc("hd", .06, 3, idx=2)))
+head("suckle", [(0, dict(jaw=.08, nk=(-.2, 0, 0), hd=(-.2, 0, 0))), (.6, dict(jaw=.08, nk=(-.2, 0, 0), hd=(-.2, 0, 0)))], loop=True, mod=osc("jaw", .04, 3.33), events=[(0, "suck"), (.3, "suck")])
+head("confused", [(0, {}), (.5, dict(nk=(0, .3, 0), hd=(.1, .2, .2))), (.8, dict(nk=(0, -.3, 0), hd=(.1, -.2, -.15))), (.7, dict(nk=(.1, 0, 0), hd=(.1, 0, .25))), (.5, {})])
+
+
+def write():
+    meta = []; blob = bytearray()
+    for c in CLIPS:
+        meta.append(dict(name=c["name"], n=c["n"], loop=c["loop"], speed=round(float(c["speed"]), 4), events=c["events"], mask=c["mask"], tag=c["tag"], off=len(blob)))
+        for p, q, e in c["fr"]:
+            a = np.concatenate([np.clip(p * 20000, -32767, 32767), np.clip(q.reshape(-1) * 32767, -32767, 32767), np.clip(e * 8000, -32767, 32767)])
+            blob += np.round(a).astype('<i2').tobytes()
+    js = json.dumps(dict(v=1, fps=FPS, nj=NJ, stride=3 + NJ * 4 + 4, clips=meta)).encode()
+    js += b' ' * ((4 - len(js) % 4) % 4)
+    with open(os.path.join(OUT, 'dog_anim.bin'), 'wb') as f:
+        f.write(b'AFA1' + struct.pack('<I', len(js)) + js + bytes(blob))
+    nf = sum(c["n"] for c in CLIPS)
+    print(f"동작 {len(CLIPS)}개 (몸 {sum(1 for c in CLIPS if not c['mask'])}, 머리 {sum(1 for c in CLIPS if c['mask'])}) · {nf}장 · {os.path.getsize(os.path.join(OUT, 'dog_anim.bin')) // 1024} KB")
+    json.dump([c["name"] for c in CLIPS], open(os.path.join(os.path.dirname(__file__), '_clips.json'), 'w'))
+
+
+def frame(name, t=0.):
+    c = next(c for c in CLIPS if c["name"] == name)
+    return c["fr"][min(c["n"] - 1, int(t * FPS))]
+
+
+if __name__ == '__main__':
+    write()
+    if '--sheet' in sys.argv:
+        import preview
+        def sheet(items, out, **kw):
+            nm = []
+            for i, (c, t) in enumerate(items):
+                p, q, e = frame(c, t)
+                preview.export(f's{i}', q, p, extra={"open": 1 - e[0]})
+                nm.append(f's{i}')
+            preview.shot(nm, out, **kw)
+        k = dict(az=50, cols=6, w=1800, h=640, d=1.0, cy=.12)
+        sheet([("stand", 0), ("sit", 0), ("down", 0), ("rest", 0), ("sploot", 0), ("side", 0), ("curl", 0), ("belly", 0), ("beg", 0), ("hind", 0), ("stand>bow", .34), ("newborn", 0)], '/home/claude/prev/poses.png', **k)
+        sheet([("walk", i * .46 / 6) for i in range(6)] + [("trot", i * .33 / 6) for i in range(6)], '/home/claude/prev/gait1.png', **dict(k, az=90))
+        sheet([("run", i * .29 / 6) for i in range(6)] + [("stand>sit", .35), ("sit>down", .4), ("stand>down", .5), ("down>side", .5), ("scratch_l", 1.0), ("paw_l", .8)], '/home/claude/prev/gait2.png', **dict(k, az=90))
+        sheet([("eat", .2), ("pee_leg", 0), ("poop", 0), ("stretch_front", 1.2), ("stretch_back", 1.2), ("jump_up", .5), ("pounce", .45), ("cower", 0), ("chew", .3), ("five_l", .8), ("dream", 1.0), ("held", 0)], '/home/claude/prev/acts.png', **k)
