@@ -52,7 +52,7 @@ final class Prop {
             let water = id == "bowl_water"
             add(Geo.lathe([(0.062, 0), (0.078, 0.004), (0.074, 0.042), (0.068, 0.044), (0.064, 0.012), (0, 0.010)], seg: 28),
                 Geo.mat(water ? SIMD3<Float>(0.80, 0.86, 0.90) : SIMD3<Float>(0.92, 0.80, 0.72), rough: 0.3))
-            let c = ModelEntity(mesh: Geo.lathe([(0, 0), (0.063, 0), (0.063, 0.002), (0, 0.003)], seg: 24),
+            let c = ModelEntity(mesh: Geo.lathe([(0, 0), (0.063, 0), (0.063, 0.002), (0, 0.003)], seg: 24) ?? .generateBox(size: 0.001),
                                 materials: [Geo.mat(water ? SIMD3<Float>(0.55, 0.75, 0.88) : SIMD3<Float>(0.50, 0.33, 0.20), rough: water ? 0.05 : 0.95)])
             entity.addChild(c)
             content = c
@@ -72,7 +72,7 @@ final class Prop {
         case "pad":
             add(.generateBox(width: 0.46, height: 0.005, depth: 0.34, cornerRadius: 0.002), Geo.mat(SIMD3<Float>(0.55, 0.72, 0.88), rough: 1), at: SIMD3<Float>(0, 0.0025, 0))
             add(.generateBox(width: 0.40, height: 0.003, depth: 0.28), Geo.mat(SIMD3<Float>(0.97, 0.97, 0.96), rough: 1), at: SIMD3<Float>(0, 0.0058, 0))
-            let c = ModelEntity(mesh: Geo.lathe([(0, 0), (0.06, 0), (0, 0.0012)], seg: 20), materials: [Geo.mat(SIMD3<Float>(0.93, 0.86, 0.45), rough: 1)])
+            let c = ModelEntity(mesh: Geo.lathe([(0, 0), (0.06, 0), (0, 0.0012)], seg: 20) ?? .generateBox(size: 0.001), materials: [Geo.mat(SIMD3<Float>(0.93, 0.86, 0.45), rough: 1)])
             c.position = SIMD3<Float>(0.03, 0.0075, -0.02)
             entity.addChild(c)
             content = c

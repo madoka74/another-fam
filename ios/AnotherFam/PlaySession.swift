@@ -31,7 +31,8 @@ final class PlaySession {
     @ObservationIgnored private var card: Entity?
     @ObservationIgnored private var cardUntil: Double = 0
     @ObservationIgnored private var toastUntil: Double = 0
-    @ObservationIgnored private var publishAt: Double = 0, saveAt: Double = 0
+    @ObservationIgnored private var publishAt: Double = 0
+    @ObservationIgnored private var saveAt: Double = 0
     @ObservationIgnored private var homeId: UUID?
     @ObservationIgnored private var homeM: simd_float4x4?
     @ObservationIgnored private var homeWaitUntil: Double = 0
