@@ -34,8 +34,10 @@ struct PlayView: View {
     }
 }
 
-/// 욕구 하나 (아이콘 + 채움 고리)
+/// 욕구 하나 (아이콘 + 채움 고리 + 이름).
+/// 고리가 찬 만큼 넉넉함 — 초록 넉넉 / 주황 곧 필요 / 빨강 지금 필요. 빨강이면 고리 바탕도 붉게(0 이어도 비어 보이지 않게)
 struct NeedRing: View {
+    let label: String
     let icon: String
     let value: Float
     var size: CGFloat = 40
@@ -43,25 +45,29 @@ struct NeedRing: View {
     var body: some View {
         let v = CGFloat(min(1, max(0, value)))
         let col: Color = value < 0.25 ? .red : (value < 0.5 ? .orange : .green)
-        ZStack {
-            Circle().stroke(.white.opacity(0.15), lineWidth: size * 0.1)
-            Circle().trim(from: 0, to: v).stroke(col, style: StrokeStyle(lineWidth: size * 0.1, lineCap: .round)).rotationEffect(.degrees(-90))
-            Image(systemName: icon).font(.system(size: size * 0.38))
+        VStack(spacing: size * 0.1) {
+            ZStack {
+                Circle().stroke(value < 0.25 ? Color.red.opacity(0.35) : .white.opacity(0.15), lineWidth: size * 0.1)
+                Circle().trim(from: 0, to: v).stroke(col, style: StrokeStyle(lineWidth: size * 0.1, lineCap: .round)).rotationEffect(.degrees(-90))
+                Image(systemName: icon).font(.system(size: size * 0.38)).foregroundStyle(value < 0.25 ? Color.red : .primary)
+            }
+            .frame(width: size, height: size)
+            Text(label).font(.system(size: max(11, size * 0.26), weight: .medium)).foregroundStyle(value < 0.25 ? Color.red : .secondary)
         }
-        .frame(width: size, height: size)
     }
 }
 
 enum Needs {
-    static func list(_ p: PetState) -> [(String, Float)] {
-        var out: [(String, Float)] = [("fork.knife", p.food)]
-        if p.age() >= 21 { out.append(("drop.fill", p.water)) }
-        out.append(("moon.zzz.fill", p.energy))
-        out.append(("toilet.fill", p.potty))
-        if p.age() >= 21 { out.append(("tennisball.fill", p.fun)) }
-        out.append(("heart.fill", p.love))
-        out.append(("sparkles", p.clean))
-        out.append(("cross.case.fill", p.health))
+    /// (이름, 아이콘, 값) — 젖먹이(3주 전)는 물·놀이가 없음
+    static func list(_ p: PetState) -> [(String, String, Float)] {
+        var out: [(String, String, Float)] = [("밥", "fork.knife", p.food)]
+        if p.age() >= 21 { out.append(("물", "drop.fill", p.water)) }
+        out.append(("기운", "moon.zzz.fill", p.energy))
+        out.append(("배변", "toilet.fill", p.potty))
+        if p.age() >= 21 { out.append(("놀이", "tennisball.fill", p.fun)) }
+        out.append(("사랑", "heart.fill", p.love))
+        out.append(("청결", "sparkles", p.clean))
+        out.append(("건강", "cross.case.fill", p.health))
         return out
     }
 }
@@ -74,12 +80,12 @@ struct CardButton: View {
     var body: some View {
         Button(action: action) {
             VStack(spacing: 4) {
-                Image(systemName: icon).font(.title3)
-                Text(title).font(.caption2)
+                Image(systemName: icon).font(.title)
+                Text(title).font(.callout.weight(.medium))
             }
-            .frame(width: 58, height: 46)
+            .frame(width: 88, height: 74)
         }
-        .buttonBorderShape(.roundedRectangle(radius: 14))
+        .buttonBorderShape(.roundedRectangle(radius: 20))
     }
 }
 
@@ -89,33 +95,36 @@ struct StatusCard: View {
 
     var body: some View {
         let p = s.shown
-        VStack(spacing: 10) {
+        VStack(spacing: 18) {
             if s.cardOn {
-                HStack(spacing: 8) {
-                    Text(p.name).font(.headline)
-                    Text(PetState.ageText(p.age())).font(.subheadline).foregroundStyle(.secondary)
-                    if p.asleep { Image(systemName: "zzz").foregroundStyle(.secondary) }
-                    Spacer(minLength: 12)
-                    Label("\(p.points)", systemImage: "p.circle.fill").font(.subheadline)
-                    Button { s.closeCard() } label: { Image(systemName: "xmark") }.buttonBorderShape(.circle).controlSize(.small)
+                HStack(spacing: 12) {
+                    Text(p.name).font(.title.weight(.bold))
+                    Text(PetState.ageText(p.age())).font(.title3).foregroundStyle(.secondary)
+                    if p.asleep { Image(systemName: "zzz").font(.title3).foregroundStyle(.secondary) }
+                    Spacer(minLength: 16)
+                    Label("\(p.points)", systemImage: "p.circle.fill").font(.title3.weight(.semibold))
+                    Button { s.closeCard() } label: { Image(systemName: "xmark") }.buttonBorderShape(.circle)
                 }
-                HStack(spacing: 8) {
+                HStack(spacing: 16) {
                     let items = Needs.list(p)
-                    ForEach(0..<items.count, id: \.self) { i in NeedRing(icon: items[i].0, value: items[i].1, size: 34) }
+                    ForEach(0..<items.count, id: \.self) { i in NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 52) }
                 }
                 // 할 일: 밥·물은 바로, 나머지는 필요할 때만 메인 창을 띄움
-                HStack(spacing: 10) {
+                HStack(spacing: 14) {
                     CardButton(icon: "fork.knife", title: "밥") { s.feed() }
                     CardButton(icon: "drop.fill", title: "물") { s.giveWater() }
-                    CardButton(icon: "archivebox.fill", title: "보관함") { AppModel.shared.showMain(tab: 2) }
-                    CardButton(icon: "cart.fill", title: "상점") { AppModel.shared.showMain(tab: 1) }
+                    CardButton(icon: "archivebox.fill", title: "보관함") { AppModel.shared.showMain(tab: 1) }
+                    CardButton(icon: "cart.fill", title: "상점") { AppModel.shared.showMain(tab: 2) }
                     CardButton(icon: "house.fill", title: "쉬기") { AppModel.shared.rest() }
                 }
             }
-            if let t = s.toastText { Text(t).font(.callout) }
-            if s.loading { Button { AppModel.shared.rest() } label: { Label("쉬기", systemImage: "house.fill") }.controlSize(.small) }
+            if let t = s.toastText { Text(t).font(.title3) }
+            if s.loading { Button { AppModel.shared.rest() } label: { Label("쉬기", systemImage: "house.fill") } }
         }
-        .padding(.horizontal, 18).padding(.vertical, 12)
+        // 크기를 정해 둠 (0.4.0: 너비가 정해지지 않아 판이 길게 늘어나고 안의 것은 작게 보였음)
+        .frame(width: s.cardOn ? 700 : nil)
+        .fixedSize(horizontal: !s.cardOn, vertical: true)
+        .padding(.horizontal, 28).padding(.vertical, 22)
         .glassBackgroundEffect()
         .opacity(s.cardOn || s.toastText != nil ? 1 : 0)
     }

@@ -38,6 +38,7 @@ final class PlaySession {
     @ObservationIgnored private var homeM: simd_float4x4?
     @ObservationIgnored private var homeWaitUntil: Double = 0
     @ObservationIgnored private var homeNew = false
+    @ObservationIgnored private var oldHomeId: UUID?           // 지난 집을 제때 못 찾아 임시 집을 만든 동안: 늦게라도 찾으면 원래 자리로
     @ObservationIgnored private var spawned = false
     @ObservationIgnored private var makingHome = false
     @ObservationIgnored private var held: [Prop?] = [nil, nil]
@@ -66,13 +67,14 @@ final class PlaySession {
         model.session = self
         SoundBank.shared.preload()
         root.addChild(room.root)
+        root.components.set(PhysicsSimulationComponent())      // 물리 기준을 공간 하나로 (중력 9.8m/s²)
         room.onAnchor = { [weak self] a, removed in self?.anchor(a, removed) }
         if let s = UserDefaults.standard.string(forKey: "af.home"), let id = UUID(uuidString: s) { homeId = id }
         now = CACurrentMediaTime()
         if let note = await room.start() { toast(note) }
         now = CACurrentMediaTime()
         startAt = now
-        homeWaitUntil = now + 10
+        homeWaitUntil = now + 25        // 지난 집 자리를 다시 알아보는 데 오래 걸릴 수 있음 (0.4.0: 10초 뒤 새 집 → 수건이 내 앞에 뜸)
         if let d = Dog(self) {
             dog = d
             d.entity.isEnabled = false
@@ -113,9 +115,44 @@ final class PlaySession {
                 // (0.1.x: 여기서 바로 놓으려다 바닥을 아직 몰라 그만두고 다시 하지 않아, 두 번째 실행부터 아무것도 안 나왔음)
                 homeM = a.originFromAnchorTransform
             }
+        } else if a.id == oldHomeId {
+            // 지난 집을 늦게 찾음: 임시 집에 놓았던 것들을 원래 자리로 되돌림
+            if !removed && a.isTracked { restoreHome(a) }
         } else if !removed && !makingHome {
             Task { await room.removeAnchor(a.id) }
         }
+    }
+
+    /// 임시 집 → 늦게 찾은 지난 집. 꺼내 둔 것들을 저장된 자리로 옮기고 강아지도 잠자리로
+    private func restoreHome(_ a: WorldAnchor) {
+        guard let old = oldHomeId else { return }
+        let temp = homeId
+        oldHomeId = nil
+        homeId = old
+        homeM = a.originFromAnchorTransform
+        homeNew = false
+        if let t = temp, t != old { Task { await room.removeAnchor(t) } }
+        guard spawned, let fy = room.floorY else { return }
+        for p in props where p.kind == .fixed || p.kind == .toy {
+            guard p.heldBy == nil, !p.inMouth, let l = pet.layout[p.id], let w = toWorld(l) else { continue }
+            var at = w.0
+            at.y = p.kind == .fixed ? fy : max(at.y, fy) + 0.03
+            if p.kind == .toy { p.setVelocity(.zero) }
+            p.entity.setPosition(at, relativeTo: nil)
+            p.entity.setOrientation(Q.ry(w.1), relativeTo: nil)
+        }
+        settleFixed()
+        if let d = dog, d.entity.isEnabled, !d.holding, let b = prop("bed") ?? prop("blanket") {
+            d.place(at: SIMD3<Float>(b.pos.x, fy, b.pos.z), yaw: d.yaw)
+        }
+    }
+
+    /// 임시 집을 그대로 집으로 삼음 (임시 집에서 내가 물건을 옮기거나 꺼냈을 때)
+    private func commitHome() {
+        guard let old = oldHomeId, let id = homeId else { return }
+        oldHomeId = nil
+        UserDefaults.standard.set(id.uuidString, forKey: "af.home")
+        Task { await room.removeAnchor(old) }
     }
 
     private func makeHome() {
@@ -127,10 +164,11 @@ final class PlaySession {
         let q = room.nav.openSpot(near: want, clear: 0.35) ?? want
         var m = matrix_identity_float4x4
         m.columns.3 = SIMD4<Float>(q.x, fy, q.y, 1)
+        if let old = homeId { oldHomeId = old }       // 지난 집은 지우지 않고 계속 찾음
         Task {
             if let id = await room.addAnchor(m) {
                 homeId = id
-                UserDefaults.standard.set(id.uuidString, forKey: "af.home")
+                if oldHomeId == nil { UserDefaults.standard.set(id.uuidString, forKey: "af.home") }
             }
             homeM = m
             homeNew = true
@@ -148,7 +186,7 @@ final class PlaySession {
         guard headOK else { return }
         guard room.floorY != nil, room.floorFromPlane || now - startAt > 8 || !room.sensingOK else { note("바닥을 찾는 중"); return }
         if homeM == nil {
-            if homeId != nil && now < homeWaitUntil { note("집을 찾는 중"); return }
+            if homeId != nil && now < homeWaitUntil { note("집을 찾는 중 · 주변을 둘러봐 주세요"); return }
             if !(room.nav.ready || now - startAt > 12) { note("바닥을 둘러봐 주세요"); return }
             makeHome()
             return
@@ -164,7 +202,8 @@ final class PlaySession {
     }
 
     private func saveLayout() {
-        guard let m = homeM else { return }
+        // 임시 집인 동안은 저장하지 않음 (지난 집 기준 자리를 덮어쓰지 않게)
+        guard let m = homeM, oldHomeId == nil else { return }
         let inv = m.inverse
         let hy = atan2(m.columns.2.x, m.columns.2.z)
         var lay: [String: [Float]] = [:]
@@ -227,9 +266,31 @@ final class PlaySession {
             d.entity.isEnabled = true
             d.arrive()
         }
+        settleFixed()
         loading = false
         toastText = nil
         saveLayout()
+    }
+
+    /// 바닥에 놓는 것의 높이: 아래에 깔린 담요·패드·방석이 있으면 그 위 (0.4.0: 담요 위에 놓인 그릇·똥이 담요에 묻혔음)
+    private func restY(_ p: Prop, _ x: Float, _ z: Float) -> Float {
+        let fy = room.floorY ?? p.pos.y
+        var y = fy
+        for q in props where q !== p && q.kind == .fixed && q.heldBy == nil {
+            if let t = q.top(at: SIMD3<Float>(x, fy, z)) { y = max(y, q.pos.y + t) }
+        }
+        return y
+    }
+
+    /// 바닥에 놓인 것들을 차례로 내려앉힘 (깔개 먼저, 그 위에 그릇·패드·치울 것)
+    private func settleFixed() {
+        let flat: Set<String> = ["blanket", "pad", "bed"]
+        let list = props.filter { ($0.kind == .fixed || $0.kind == .mess) && $0.heldBy == nil }
+        for p in list.filter({ flat.contains($0.id) }) + list.filter({ !flat.contains($0.id) }) {
+            let q = p.pos
+            let y = flat.contains(p.id) ? (room.floorY ?? q.y) : restY(p, q.x, q.z)
+            if abs(q.y - y) > 0.0005 { p.entity.setPosition(SIMD3<Float>(q.x, y, q.z), relativeTo: nil) }
+        }
     }
 
     private func add(_ p: Prop, at: SIMD3<Float>, yaw: Float) {
@@ -237,6 +298,7 @@ final class PlaySession {
         p.entity.orientation = Q.ry(yaw)
         root.addChild(p.entity)
         props.append(p)
+        p.started()
     }
 
     func removeProp(_ p: Prop) {
@@ -249,6 +311,7 @@ final class PlaySession {
     /// 반환: 안 될 때 까닭
     func takeOut(_ id: String) -> String? {
         guard spawned, let fy = room.floorY else { return "공간을 알아보는 중이에요" }
+        commitHome()
         let f = userFwd
         let kindProbe = Prop(id)
         if kindProbe.kind == .fixed || kindProbe.kind == .toy {
@@ -266,6 +329,7 @@ final class PlaySession {
             at = SIMD3<Float>(q.x, fy, q.y)
         }
         add(kindProbe, at: at, yaw: atan2(-f.x, -f.z))
+        if kindProbe.kind == .fixed { settleFixed() }
         if kindProbe.kind == .tool { kindProbe.setMode(.kinematic) }       // 손에 쥘 것은 집을 때까지 내 앞에 떠 있음
         saveLayout()
         if id == "bowl_food" { kindProbe.fill = pet.foodBowl }
@@ -275,6 +339,7 @@ final class PlaySession {
     }
 
     func putBack(_ id: String) {
+        commitHome()
         for p in props.filter({ $0.id == id }) {
             if id == "treat" || id == "dental" { pet.inv[id] = pet.count(id) + 1 }
             removeProp(p)
@@ -303,15 +368,25 @@ final class PlaySession {
         var q = at
         q.y = room.floorY ?? at.y
         add(p, at: q, yaw: Float.random(in: 0...6))
+        q.y = restY(p, q.x, q.z)
+        p.entity.setPosition(q, relativeTo: nil)
     }
 
     func padFull(_ pad: Prop) { toast("패드를 갈아 주세요") }
 
     // MARK: 누르기 (멀리서 바라보고 집기)
+    /// 강아지를 바라보고 집기 → 메뉴 카드.
+    /// 쓰다듬기·안기처럼 손이 강아지에 닿아 생긴 탭은 무시 (0.4.0: 만질 때마다 카드가 떴음 — 손가락이 몸에 닿는 것도 시스템이 탭으로 보냄)
     func tapDog() {
-        guard now - lastGrabAt > 0.7 else { return }
+        guard now - lastGrabAt > 0.7, let d = dog else { return }
+        if d.holding || d.touching || now - d.lastTouchAt < 1.5 { return }
+        let c = d.bodyWorld
+        let reach: Float = 0.12 + 0.2 * d.entity.scale.x
+        for h in room.hands where h.seen {
+            if simd_distance(h.palm, c) < reach + 0.1 || simd_distance(h.index, c) < reach + 0.06 { return }
+        }
         cardOn.toggle()
-        cardUntil = now + 12
+        cardUntil = now + 15
     }
 
     // MARK: 강아지 메뉴 (강아지를 누르면 뜨는 카드의 단추)
@@ -322,13 +397,13 @@ final class PlaySession {
         cardUntil = now + 12
         let age = pet.age()
         if age < 21 {
-            guard pet.has("bottle"), pet.count("formula") > 0 else { AppModel.shared.showMain(tab: 1, note: "젖병과 분유가 필요해요"); return }
+            guard pet.has("bottle"), pet.count("formula") > 0 || pet.bottle > 0.01 else { AppModel.shared.showMain(tab: 2, note: "젖병과 분유가 필요해요"); return }
             if !isOut("bottle"), let why = takeOut("bottle") { toast(why); return }
             toast("젖병을 집어 입에 대 주세요")
             return
         }
-        guard pet.has("bowl_food") else { AppModel.shared.showMain(tab: 1, note: "밥그릇이 필요해요"); return }
-        guard Catalog.foodFor(age).contains(where: { $0 != "formula" && pet.count($0) > 0 }) else { AppModel.shared.showMain(tab: 1, note: "맞는 사료가 없어요"); return }
+        guard pet.has("bowl_food") else { AppModel.shared.showMain(tab: 2, note: "밥그릇이 필요해요"); return }
+        guard Catalog.foodFor(age).contains(where: { $0 != "formula" && pet.count($0) > 0 }) else { AppModel.shared.showMain(tab: 2, note: "맞는 사료가 없어요"); return }
         if !isOut("bowl_food"), let why = takeOut("bowl_food") { toast(why); return }
         if let b = prop("bowl_food") { useProp(b) }
     }
@@ -410,10 +485,7 @@ final class PlaySession {
         // 바닥 높이가 바뀌면(더 정확한 바닥 면을 알아봄) 놓아 둔 것들도 따라 내려앉힘
         if let fy = room.floorY, abs(fy - lastFloor) > 0.004 {
             lastFloor = fy
-            for p in props where (p.kind == .fixed || p.kind == .mess) && p.heldBy == nil {
-                let q = p.pos
-                p.entity.setPosition(SIMD3<Float>(q.x, fy, q.z), relativeTo: nil)
-            }
+            settleFixed()
         }
         // 그릇·계단은 길찾기에서 비켜 감
         var ex: [(c: SIMD2<Float>, r: Float)] = []
@@ -452,16 +524,18 @@ final class PlaySession {
         if c.isEnabled != on { c.isEnabled = on }
         guard on else { return }
         var at = userPos + userFwd * 0.9 - SIMD3<Float>(0, 0.15, 0)
+        var k = min(1.8, max(0.8, simd_distance(userPos, at) * 0.85))
         if let d = dog, d.entity.isEnabled {
-            at = d.headWorld + SIMD3<Float>(0, 0.24, 0)
+            at = d.headWorld
+            k = min(1.8, max(0.8, simd_distance(userPos, at) * 0.85))
+            at.y += 0.12 + 0.17 * k            // 판 아래 끝이 머리 위에 오게 (판 높이 약 0.3m × 크기)
             let v = userPos - at
             let l = simd_length(v)
             if l > 0.01 { at += v / l * min(0.15, l * 0.3) }
         }
-        let l = simd_distance(userPos, at)
         c.position = at
         c.look(at: at - (userPos - at), from: at, relativeTo: nil)
-        c.scale = SIMD3<Float>(repeating: min(1.6, max(0.6, l * 0.8)))
+        c.scale = SIMD3<Float>(repeating: k)
     }
 
     private func publish() {
@@ -574,12 +648,15 @@ final class PlaySession {
             p.entity.setOrientation(Q.ry(atan2(f.x, f.z)), relativeTo: nil)
             if moved < 0.03 && now - grabStart[i].at < 0.6 {
                 p.entity.setPosition(SIMD3<Float>(grabStart[i].pos.x, fy, grabStart[i].pos.z), relativeTo: nil)
+                settleFixed()
                 lastGrabAt = 0
                 useProp(p)
                 lastGrabAt = now
             } else {
                 p.entity.setPosition(SIMD3<Float>(p.pos.x, fy, p.pos.z), relativeTo: nil)
+                settleFixed()
                 SoundBank.shared.play("thump", on: p.entity, gain: -22)
+                commitHome()
                 saveLayout()                 // 옮겨 놓은 자리가 그대로 집이 됨
                 Store.save(pet)
             }

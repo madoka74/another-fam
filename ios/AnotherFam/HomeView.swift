@@ -13,8 +13,8 @@ struct HomeView: View {
             if model.pet != nil {
                 TabView(selection: Binding(get: { model.tab }, set: { model.tab = $0 })) {
                     HomeTab().tabItem { Label("홈", systemImage: "pawprint.fill") }.tag(0)
-                    ShopTab().tabItem { Label("상점", systemImage: "cart.fill") }.tag(1)
-                    StorageTab().tabItem { Label("보관함", systemImage: "archivebox.fill") }.tag(2)
+                    StorageTab().tabItem { Label("보관함", systemImage: "archivebox.fill") }.tag(1)
+                    ShopTab().tabItem { Label("상점", systemImage: "cart.fill") }.tag(2)
                     SettingsTab().tabItem { Label("설정", systemImage: "gearshape.fill") }.tag(3)
                 }
             } else {
@@ -121,7 +121,7 @@ struct HomeTab: View {
                 ProgressView(value: min(1, age / Sim.maxAge)) { Text("함께한 지 \(days)일").font(.caption).foregroundStyle(.secondary) }
                 let items = Needs.list(p)
                 HStack(spacing: 22) {
-                    ForEach(0..<items.count, id: \.self) { i in NeedRing(icon: items[i].0, value: items[i].1, size: 64) }
+                    ForEach(0..<items.count, id: \.self) { i in NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 64) }
                 }
                 .padding(.vertical, 8)
                 HStack(spacing: 16) {
@@ -235,7 +235,6 @@ struct SettingsTab: View {
     @State private var volume: Double = UserDefaults.standard.object(forKey: "af.volume") as? Double ?? 0
     @State private var askReset = false
     @State private var days: Double = 0
-    @FocusState private var typing: Bool
     private var model: AppModel { AppModel.shared }
 
     var body: some View {
@@ -253,21 +252,28 @@ struct SettingsTab: View {
                     UserDefaults.standard.set(x, forKey: "af.volume")
                 }
             }
+            // 함께한 날: 숫자판 대신 끌기·단추로 (0.4.0: 숫자 칸을 정확히 눌러야만 숫자판이 떠 어려웠음)
             Section("시험") {
-                HStack(spacing: 12) {
-                    Text("함께한 날")
-                    TextField("일", value: $days, format: .number.precision(.fractionLength(0...1)))
-                        .keyboardType(.decimalPad)
-                        .focused($typing)
-                        .multilineTextAlignment(.trailing)
-                        .frame(width: 110)
-                    Text("일 → \(PetState.ageText(min(Sim.maxAge, max(0, days) * Sim.ageRate)))").foregroundStyle(.secondary)
-                    Spacer()
-                    Button("적용") {
-                        typing = false
-                        model.setTogetherDays(days)
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("함께한 날")
+                        Text(days.formatted(.number.precision(.fractionLength(0...1))) + "일").font(.title2.weight(.semibold)).monospacedDigit()
+                        Text("→ " + PetState.ageText(min(Sim.maxAge, max(0, days) * Sim.ageRate))).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    Slider(value: $days, in: 0...(Sim.maxAge / Sim.ageRate), step: 0.5)
+                    HStack(spacing: 10) {
+                        ForEach([-10.0, -1, -0.5, 0.5, 1, 10], id: \.self) { d in
+                            Button(d > 0 ? "+\(d.formatted())" : d.formatted()) {
+                                days = min(Sim.maxAge / Sim.ageRate, max(0, ((days + d) * 2).rounded() / 2))
+                            }
+                            .monospacedDigit()
+                        }
+                        Spacer()
+                        Button("적용") { model.setTogetherDays(days) }.buttonStyle(.borderedProminent)
                     }
                 }
+                .padding(.vertical, 6)
             }
             Section("가족") {
                 Button("처음부터 다시", role: .destructive) { askReset = true }

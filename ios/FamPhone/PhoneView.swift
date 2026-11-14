@@ -106,7 +106,7 @@ struct PhoneView: View {
     private func needs(_ p: PetState) -> [(String, String, Float)] {
         var out: [(String, String, Float)] = [("밥", "fork.knife", p.food)]
         if p.age() >= 21 { out.append(("물", "drop.fill", p.water)) }
-        out.append(("잠", "moon.zzz.fill", p.energy))
+        out.append(("기운", "moon.zzz.fill", p.energy))
         out.append(("배변", "toilet.fill", p.potty))
         if p.age() >= 21 { out.append(("놀이", "tennisball.fill", p.fun)) }
         out.append(("사랑", "heart.fill", p.love))
@@ -188,9 +188,9 @@ struct Ring: View {
         let v = CGFloat(min(1, max(0, value)))
         let col: Color = value < 0.25 ? .red : (value < 0.5 ? .orange : .green)
         ZStack {
-            Circle().stroke(.white.opacity(0.12), lineWidth: 5)
+            Circle().stroke(value < 0.25 ? Color.red.opacity(0.35) : .white.opacity(0.12), lineWidth: 5)
             Circle().trim(from: 0, to: v).stroke(col, style: StrokeStyle(lineWidth: 5, lineCap: .round)).rotationEffect(.degrees(-90))
-            Image(systemName: icon).font(.system(size: 18))
+            Image(systemName: icon).font(.system(size: 18)).foregroundStyle(value < 0.25 ? Color.red : .primary)
         }
         .frame(width: 54, height: 54)
     }

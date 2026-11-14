@@ -354,7 +354,10 @@ hold("nb_squirm", NEWBORN, 2.4, mod=chain(osc("yaw", .12, .42), osc("hd", .35, .
 hold("nb_root", S(NEWBORN, nk=(-.1, 0, 0), hd=(-.1, 0, 0)), 1.6, mod=chain(osc("hd", .45, 1.25, idx=1), osc("nk", .22, 2.5, idx=0), osc("jaw", .06, 5)), tag="nb")
 hold("nb_nurse", S(NEWBORN, nk=(-.35, 0, 0), hd=(-.3, 0, 0), jaw=.1), 1.2, mod=chain(osc("nk", .05, 3.33, idx=0), lambda s, t: dict(s, jaw=.08 + .05 * np.sin(2 * np.pi * t / .3),
      FL=('a', -.9 + .35 * np.sin(2 * np.pi * t / .6), .6, .9, .2), FR=('a', -.9 + .35 * np.sin(2 * np.pi * t / .6 + np.pi), .6, .9, .2))), events=[(i * .3, "suck") for i in range(4)], tag="nb")
-hold("nb_sleep", S(NEWBORN, roll=.5, nk=(.4, .3, 0)), 4.0, mod=lambda s, t: dict(s, HL=('a', 1.0 + (.25 * np.sin(2 * np.pi * t / .25) if 1.2 < t < 1.7 else 0), .6, -.6, .5), jaw=(.06 if 2.6 < t < 2.9 else 0)), tag="nb")
+# 갓난 강아지 잠: 옆으로 완전히 누워 몸 옆면이 바닥에 닿음 (0.4.0 까지: 엎드린 자세를 0.5만 굴려 몸 반쪽·뒷다리가 공중에 뜸)
+NB_SLEEP = S(SIDE, dy=-.112, lid=1, wag=0, tail=(-.4, 0), nk=(.2, 0, -.12), hd=(.15, 0, -.05),
+             FL=('a', -.6, .10, .45, .35), FR=('a', -.45, -.18, .6, .35), HL=('a', -.35, .10, .45, -.1), HR=('a', -.25, -.18, .55, -.1))
+hold("nb_sleep", NB_SLEEP, 4.0, mod=lambda s, t: dict(s, HL=('a', -.35 + (.22 * np.sin(2 * np.pi * t / .25) if 1.2 < t < 1.7 else 0), .10, .45, -.1), jaw=(.06 if 2.6 < t < 2.9 else 0)), tag="nb")
 # 노견
 seq("senior_rise", [(0, DOWN), (.9, S(DOWN, dy=-.085, pitch=-.25, FL=(0, 0, .03, 0), FR=(0, 0, .03, 0))), (.7, S(DOWN, dy=-.08, pitch=-.3, FL=(0, 0, .02, 0), FR=(0, 0, .02, 0))), (1.0, S(dy=-.03, pitch=.1, HL=(0, 0, .03, 0), HR=(.01, 0, .02, 0))), (.6, S(dy=-.006, nk=(.2, 0, 0)))], tag="senior")
 seq("senior_down", [(0, STAND), (.8, S(dy=-.03, pitch=.15, nk=(.2, 0, 0))), (.9, S(DOWN, dy=-.07, pitch=.22, HL=(0, 0, .03, 0), HR=(0, 0, .03, 0))), (.9, DOWN)], events=[(2.2, "thump")], tag="senior")

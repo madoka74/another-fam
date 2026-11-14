@@ -14,6 +14,7 @@ final class Dog {
     let entity = Entity()
     let mouth = Entity()                 // 소리 나는 자리 (입)
     private let hit = Entity()           // 바라보고 집는 자리 (갓난 강아지는 작아서 넉넉히 키움)
+    private let body = Entity()          // 몸 부딪힘 (장난감이 몸을 뚫고 지나가지 않게 — 몸통을 따라 움직임)
     let anim: DogAnimator
     let skin: DogSkin
     unowned let s: PlaySession
@@ -45,6 +46,7 @@ final class Dog {
     private var lureKind = ""
     // 손
     private(set) var touching = false
+    private(set) var lastTouchAt: Double = -9
     private var touchRegion = ""
     private var touchT: Float = 0, untouchT: Float = 9
     private var heldT: Float = 0, unheldT: Float = 0
@@ -65,6 +67,13 @@ final class Dog {
         hit.components.set(InputTargetComponent())
         hit.components.set(DogTag())
         entity.addChild(hit)
+        body.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(0.13, 0.12, 0.30))]))
+        var pb = PhysicsBodyComponent(massProperties: .default, material: PhysicsMaterialResource.generate(friction: 0.8, restitution: 0.1), mode: .kinematic)
+        pb.isAffectedByGravity = false
+        body.components.set(pb)
+        body.components.set(InputTargetComponent())         // 몸을 바라보고 집어도 메뉴 (부딪힘 상자가 누르는 상자를 가리지 않게)
+        body.components.set(DogTag())
+        entity.addChild(body)
     }
 
     // MARK: 값
@@ -88,6 +97,7 @@ final class Dog {
         return entity.convert(position: l, to: nil)
     }
     var headWorld: SIMD3<Float> { entity.convert(position: skin.T[J.head], to: nil) }
+    var bodyWorld: SIMD3<Float> { entity.convert(position: (skin.T[J.root] + skin.T[J.chest]) * 0.5, to: nil) }
 
     func place(at p: SIMD3<Float>, yaw y: Float) {
         pos = p; yaw = y; lastPos = p
@@ -251,7 +261,6 @@ final class Dog {
         anim.age = pet.age(Date().timeIntervalSince1970)        // 자세 고르기 전에 새 나이로 (standName 이 나이를 봄)
         dropCarry()
         onPerch = nil
-        nursing = false
         anim.stop()
         anim.overlay(nil)
         anim.setPosture(standName)
@@ -305,6 +314,7 @@ final class Dog {
         }
         if touch { touchT += dt; untouchT = 0; touchRegion = region } else { untouchT += dt; if untouchT > 0.4 { touchT = 0 } }
         touching = touch
+        if touch || act == .held { lastTouchAt = s.now }
         if fastHit && touchT < 0.12 && act != .held && act != .sleep && !baby && pet.bond < 0.6 {
             begin(.idle, for: 2)
             anim.play("startle")
@@ -392,6 +402,10 @@ final class Dog {
         skin.update(job)
         skin.setTone(clean: p.clean, thin: stage == .senior ? 1 : 0)
         mouth.position = skin.T[J.head] + SIMD3<Float>(0, 0, 0.04)
+        let ra = skin.T[J.root], ch = skin.T[J.chest]
+        body.position = (ra + ch) * 0.5 + SIMD3<Float>(0, -0.01, 0)
+        let ax = ch - ra
+        body.orientation = simd_length(ax) > 1e-4 ? simd_quatf(from: SIMD3<Float>(0, 0, 1), to: simd_normalize(ax)) : Q.ry(0)
         // 동작 속 사건 → 소리
         for e in anim.events {
             switch e {
@@ -427,6 +441,17 @@ final class Dog {
     /// 손·물건에 대한 반응 (하던 일을 끊고 들어옴)
     private func react(_ dt: Float) {
         guard act != .held, act != .fall, act != .potty else { return }
+        // 젖병: 젖꼭지가 입 가까이. 자고 있어도 배고프면 깨어 먹음
+        // (0.4.0: 갓난 강아지는 늘 자는 상태라 자는 중엔 젖병을 대도 안 먹었음)
+        if act != .nurse, age < 60, let b = s.props.first(where: { $0.id == "bottle" && $0.heldBy != nil }),
+           simd_distance(b.pos, mouthWorld) < 0.10 {
+            if pet.food >= 0.95 { tell("배불러해요") }
+            else if pet.bottle > 0.01 || pet.count("formula") > 0 {
+                if act == .sleep { pet.asleep = false }
+                begin(.nurse)
+                return
+            } else { tell("분유가 없어요") }
+        }
         // 쓰다듬기
         if touching && touchT > 0.25 {
             if act == .sleep {
@@ -438,14 +463,6 @@ final class Dog {
             if act != .petted && act != .nurse && act != .trick { begin(.petted) }
         }
         if act == .sleep { return }
-        // 젖병: 젖꼭지가 입 가까이
-        if let b = s.props.first(where: { $0.id == "bottle" && $0.heldBy != nil }), age < 60 {
-            let d = simd_distance(b.pos, mouthWorld)
-            if d < 0.10 && pet.food < 0.97 && act != .nurse {
-                if pet.count("formula") > 0 || nursing { begin(.nurse) }
-                else { s.toast("분유가 없어요") }
-            }
-        }
         // 손에 든 간식·장난감을 향해
         if !baby && act != .trick && act != .eat && act != .nurse && act != .petted && act != .tug && act != .fetch {
             if let t = s.props.first(where: { $0.heldBy != nil && ($0.id == "treat" || $0.id == "dental") }), simd_distance(t.pos, pos) < 1.8 {
@@ -468,7 +485,13 @@ final class Dog {
         }
     }
 
-    private var nursing = false
+    private var tellAt: Double = 0
+    /// 짧은 알림 (같은 말이 계속 뜨지 않게 6초에 한 번)
+    private func tell(_ t: String) {
+        guard s.now > tellAt else { return }
+        tellAt = s.now + 6
+        s.toast(t)
+    }
 
     // MARK: 행동 한 걸음
     private func step(_ dt: Float) {
@@ -1093,30 +1116,37 @@ final class Dog {
     }
 
     // MARK: 젖병
+    /// 젖병 한 번 = 분유 1회분(pet.bottle 1). 한 번 탄 분유는 다 먹을 때까지 남아 있어 다시 대면 이어 먹음.
+    /// (0.4.0: 젖병이 입에서 조금만 떨어졌다 닿아도 새 분유를 써서 8회분이 금방 없어졌고, 다 먹은 뒤에도 게이지가 다 차지 않았음)
     private func nurseStep(_ dt: Float) {
         guard let b = s.props.first(where: { $0.id == "bottle" && $0.heldBy != nil }), simd_distance(b.pos, mouthWorld) < 0.16 else {
-            anim.stop(); nursing = false
+            anim.stop()
             begin(.idle, for: 2)
             return
         }
+        var p = pet
         if phase == 0 {
             phase = 1
-            if !nursing { var p = pet; if p.use("formula") { nursing = true }; pet = p }
             if baby { anim.setPosture("newborn"); anim.hold("nb_nurse") } else { anim.overlay("suckle", hold: true) }
         }
-        var p = pet
-        p.food = min(1, p.food + dt / 45)
+        if p.bottle <= 0.001 {
+            guard p.use("formula") else { anim.stop(); begin(.idle, for: 2); tell("분유가 없어요"); return }
+            p.bottle = 1
+        }
+        // 1회분을 40초쯤에 먹음. 1회분 = 한 끼(갓난 0.7) — 바닥에서 먹이면 게이지가 70% 참
+        let sip = min(p.bottle, dt / 40)
+        p.bottle -= sip
+        p.food = min(1, p.food + sip * stage.meal)
         p.love = min(1, p.love + 0.01 * dt)
         p.bond = min(1, p.bond + 0.002 * dt)
+        let done = p.bottle <= 0.001
+        if done { p.bottle = 0; p.meals += 1; p.potty = max(0, p.potty - 0.3) }
         pet = p
-        if p.food >= 0.99 {
-            nursing = false
-            p.potty = max(0, p.potty - 0.3)
-            p.meals += 1
-            pet = p
+        if done || p.food >= 0.99 {
             anim.stop()
             begin(.idle, for: 2)
             fx("sigh", gain: -22)
+            if !done { tell("배불러해요") }
         }
     }
 

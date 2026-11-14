@@ -45,6 +45,7 @@ final class Prop {
         }
         var r: Float = 0.06
         var shape: ShapeResource = .generateSphere(radius: 0.03)
+        var shapes: [ShapeResource]?
         var mass: Float = 0.05
         var bounce: Float = 0.3
         switch id {
@@ -58,6 +59,14 @@ final class Prop {
             content = c
             r = 0.09
             shape = ShapeResource.generateBox(size: SIMD3<Float>(0.16, 0.05, 0.16)).offsetBy(translation: SIMD3<Float>(0, 0.025, 0))
+            // 부딪힘은 바닥 + 둘레 벽 (속이 꽉 찬 상자면 장난감이 그릇 위에 떠서 얹힘)
+            var cs: [ShapeResource] = [ShapeResource.generateBox(size: SIMD3<Float>(0.13, 0.012, 0.13)).offsetBy(translation: SIMD3<Float>(0, 0.006, 0))]
+            for i in 0..<10 {
+                let a = Float(i) / 10 * 2 * .pi
+                cs.append(ShapeResource.generateBox(size: SIMD3<Float>(0.012, 0.044, 0.05))
+                    .offsetBy(rotation: simd_quatf(angle: a, axis: SIMD3<Float>(0, 1, 0)), translation: SIMD3<Float>(sin(a) * 0.072, 0.022, cos(a) * 0.072)))
+            }
+            shapes = cs
         case "blanket":
             add(.generateBox(width: 0.52, height: 0.014, depth: 0.42, cornerRadius: 0.007), Geo.mat(SIMD3<Float>(0.78, 0.70, 0.60), rough: 1), at: SIMD3<Float>(0, 0.007, 0))
             add(.generateBox(width: 0.50, height: 0.004, depth: 0.10, cornerRadius: 0.002), Geo.mat(SIMD3<Float>(0.64, 0.50, 0.42), rough: 1), at: SIMD3<Float>(0, 0.0155, 0.12))
@@ -103,7 +112,7 @@ final class Prop {
             r = 0.062; shape = .generateBox(size: SIMD3<Float>(0.12, 0.026, 0.044)); mass = 0.04; bounce = 0.3
         case "blanky":
             buildBlanky()
-            r = 0.11; shape = .generateBox(size: SIMD3<Float>(0.07, 0.20, 0.05)); mass = 0.05; bounce = 0.1
+            r = 0.11; shape = .generateBox(size: SIMD3<Float>(0.075, 0.20, 0.05)); mass = 0.06; bounce = 0.05
         case "bottle":
             add(Geo.lathe([(0, 0), (0.019, 0), (0.020, 0.07), (0.013, 0.082), (0.013, 0.09), (0.006, 0.10), (0.004, 0.112), (0, 0.114)], seg: 20),
                 Geo.mat(SIMD3<Float>(0.96, 0.95, 0.90), rough: 0.25), at: SIMD3<Float>(0, -0.05, 0))
@@ -133,12 +142,22 @@ final class Prop {
         }
         radius = r
         entity.components.set(PropTag(id: uid))
-        entity.components.set(CollisionComponent(shapes: [shape]))
+        entity.components.set(CollisionComponent(shapes: shapes ?? [shape]))
         entity.components.set(InputTargetComponent())
         if kind == .toy || kind == .tool {
-            entity.components.set(PhysicsBodyComponent(massProperties: PhysicsMassProperties(mass: mass),
-                                                       material: PhysicsMaterialResource.generate(friction: 0.7, restitution: bounce), mode: .dynamic))
+            // 무게·도는 무게(관성)를 실제 모양으로 계산 — 0.4.0 은 무게만 주어 관성이 기본값(수십 g 물건에 너무 큼)이라
+            // 부딪혀도 잘 돌지 않고 풍선처럼 둥둥 떠다니듯 움직였음
+            var b = PhysicsBodyComponent(massProperties: PhysicsMassProperties(shape: shape, mass: mass),
+                                         material: PhysicsMaterialResource.generate(friction: id == "blanky" ? 0.95 : 0.7, restitution: bounce), mode: .dynamic)
+            b.linearDamping = 0.05
+            b.angularDamping = id == "ball" ? 0.15 : 0.6
+            entity.components.set(b)
             entity.components.set(PhysicsMotionComponent())
+        } else if kind == .fixed {
+            // 바닥에 놓아 두는 것도 부딪힘 몸을 가짐 (0.4.0: 부딪힘 모양만 있고 물리 몸이 없어 장난감이 담요·그릇을 뚫고 바닥까지 묻혔음)
+            // 손으로 옮기므로 '움직이게 놓는 몸'(kinematic) — 중력·밀림은 받지 않음
+            entity.components.set(PhysicsBodyComponent(massProperties: .default,
+                                                       material: PhysicsMaterialResource.generate(friction: 0.9, restitution: 0.05), mode: .kinematic))
         }
         showFill()
     }
@@ -201,14 +220,42 @@ final class Prop {
             e.scale = simd_max(b.h, SIMD3<Float>(repeating: 0.0006))
             holder.addChild(e)
         }
-        // 배 구멍 속 빛 구슬 하나 (은은한 하늘빛)
+        // 배 구멍 속 빛 하나: 블랭키씨 기준(어나더 스페이스·비전 드럼)과 같이 7색 중 무작위 — 꺼낼 때마다·앱을 열 때마다 새로 고름
+        // 숨 쉬듯 2.2초에 커졌다 작아짐 + 빛무리(반투명, 깊이 안 씀)
         let ob = box(3)
-        var glow = UnlitMaterial(color: UIColor(red: 0.45, green: 0.85, blue: 0.95, alpha: 1))
-        glow.blending = .opaque
-        let orb = ModelEntity(mesh: .generateSphere(radius: 1), materials: [glow])
-        orb.position = ob.c
-        orb.scale = SIMD3<Float>(repeating: max(0.002, ob.h.x * 0.8))
-        holder.addChild(orb)
+        let cols: [SIMD3<Float>] = [[0.2, 0.78, 0.86], [0.84, 0.58, 0.16], [1.0, 0.36, 0.72], [0.62, 1.0, 0.38], [1.0, 0.88, 0.35], [0.45, 0.6, 1.0], [0.75, 0.5, 1.0]]
+        let c = cols.randomElement() ?? cols[0]
+        let col = UIColor(red: CGFloat(c.x), green: CGFloat(c.y), blue: CGFloat(c.z), alpha: 1)
+        let r = max(0.002, ob.h.x * 0.8)
+        let sph = MeshResource.generateSphere(radius: 1)
+        let core = ModelEntity(mesh: sph, materials: [UnlitMaterial(color: col)])
+        core.position = ob.c
+        core.scale = SIMD3<Float>(repeating: r)
+        holder.addChild(core)
+        var hm = UnlitMaterial(color: col)
+        hm.blending = .transparent(opacity: .init(scale: 0.3))
+        hm.writesDepth = false
+        let halo = ModelEntity(mesh: sph, materials: [hm])
+        halo.position = ob.c
+        halo.scale = SIMD3<Float>(repeating: r * 1.5)
+        holder.addChild(halo)
+        glow = (core, halo, ob.c, r)
+    }
+
+    private var glow: (core: Entity, halo: Entity, c: SIMD3<Float>, r: Float)?
+
+    /// 공간에 놓인 뒤 한 번: 빛 숨쉬기를 RealityKit 되풀이 움직임으로 맡김
+    func started() {
+        guard let g = glow else { return }
+        let id = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+        func loop(_ e: Entity, _ a: Float, _ b: Float) {
+            let anim = FromToByAnimation<Transform>(from: Transform(scale: SIMD3<Float>(repeating: a), rotation: id, translation: g.c),
+                                                    to: Transform(scale: SIMD3<Float>(repeating: b), rotation: id, translation: g.c),
+                                                    duration: 2.2, timing: .easeInOut, bindTarget: .transform, repeatMode: .autoReverse)
+            if let r = try? AnimationResource.generate(with: anim) { e.playAnimation(r) }
+        }
+        loop(g.core, g.r * 0.9, g.r * 1.06)
+        loop(g.halo, g.r * 1.15, g.r * 2.0)
     }
 
     /// 그릇에 담긴 양·패드 얼룩

@@ -52,7 +52,7 @@ final class DogSkin {
     private var meshes: [LowLevelMesh] = []
     private var shells: [ModelEntity] = []
     private let headPivot = Entity(), jawPivot = Entity()
-    private var eyes: [ModelEntity] = [], lids: [Entity] = []
+    private var eyes: [ModelEntity] = [], eyeRest: [SIMD3<Float>] = []
     private var tongue: ModelEntity?
     private var busy = false
     private var pending: SkinJob?
@@ -99,7 +99,7 @@ final class DogSkin {
         m.roughness = .init(floatLiteral: 0.92)
         m.metallic = .init(floatLiteral: 0)
         if k == 0 {
-            m.baseColor = .init(tint: color(SIMD3<Float>(0.86, 0.76, 0.72) * mixv))
+            m.baseColor = .init(tint: color(SIMD3<Float>(0.90, 0.86, 0.82) * mixv))
             return m
         }
         if let tc = texC, let th = texH {
@@ -109,7 +109,8 @@ final class DogSkin {
             ph.sampler = repeatSampler
             m.baseColor = .init(tint: color(c), texture: pc)
             m.blending = .transparent(opacity: .init(scale: 1, texture: ph))
-            m.opacityThreshold = min(0.97, 0.14 + 0.84 * t + thin * 0.06 * t)
+            // 문턱: 안쪽 겹은 낮게(속털이 빽빽해 속이 비치지 않게), 바깥 겹만 가늘게 (0.4.0: 0.14 + 0.84t 는 속이 비쳐 보였음)
+            m.opacityThreshold = min(0.95, 0.05 + 0.88 * t * t + thin * 0.06 * t)
         } else {
             m.baseColor = .init(tint: color(c))
         }
@@ -162,26 +163,13 @@ final class DogSkin {
         em.roughness = .init(floatLiteral: 0.06)
         em.clearcoat = .init(scale: 1)
         em.clearcoatRoughness = .init(scale: 0.03)
-        var lm = PhysicallyBasedMaterial()
-        lm.baseColor = .init(tint: DogSkin.color(SIMD3<Float>(0.90, 0.86, 0.82)))
-        lm.roughness = .init(floatLiteral: 1)
-        lm.faceCulling = .none
-        let lidMesh = DogSkin.capMesh(radius: D.eyeR * 1.1, angle: 1.66)
         for s: Float in [1, -1] {
             let c = SIMD3<Float>(s * D.eye.x, D.eye.y, D.eye.z) - hr
             let e = ModelEntity(mesh: .generateSphere(radius: D.eyeR), materials: [em])
             e.position = c
             headPivot.addChild(e)
             eyes.append(e)
-            let holder = Entity()
-            holder.position = c
-            // 눈은 살짝 바깥을 봄
-            holder.orientation = Q.ry(s * 0.32)
-            let lid = Entity()
-            if let lidMesh { lid.addChild(ModelEntity(mesh: lidMesh, materials: [lm])) }
-            holder.addChild(lid)
-            headPivot.addChild(holder)
-            lids.append(lid)
+            eyeRest.append(c)
         }
         var nm = PhysicallyBasedMaterial()
         nm.baseColor = .init(tint: DogSkin.color(SIMD3<Float>(0.02, 0.018, 0.018)))
@@ -205,31 +193,6 @@ final class DogSkin {
         tg.scale = SIMD3<Float>(0.0078, 0.0028, 0.014)
         jawPivot.addChild(tg)
         tongue = tg
-    }
-
-    /// 공의 한쪽 뚜껑 (꼭대기 +Z 에서 angle 까지) — 눈꺼풀
-    private static func capMesh(radius: Float, angle: Float) -> MeshResource? {
-        var pos: [SIMD3<Float>] = [], nrm: [SIMD3<Float>] = [], idx: [UInt32] = []
-        let nr = 8, ns = 18
-        for i in 0...nr {
-            let a = angle * Float(i) / Float(nr)
-            for j in 0..<ns {
-                let b = 2 * Float.pi * Float(j) / Float(ns)
-                let n = SIMD3<Float>(sin(a) * cos(b), sin(a) * sin(b), cos(a))
-                pos.append(n * radius); nrm.append(n)
-            }
-        }
-        for i in 0..<nr {
-            for j in 0..<ns {
-                let a = UInt32(i * ns + j), b = UInt32(i * ns + (j + 1) % ns), c = UInt32((i + 1) * ns + j), d = UInt32((i + 1) * ns + (j + 1) % ns)
-                idx.append(contentsOf: [a, c, b, b, c, d])
-            }
-        }
-        var d = MeshDescriptor(name: "lid")
-        d.positions = MeshBuffers.Positions(pos)
-        d.normals = MeshBuffers.Normals(nrm)
-        d.primitives = .triangles(idx)
-        return try? MeshResource.generate(from: [d])
     }
 
     // MARK: 자세 놓기
@@ -285,10 +248,15 @@ final class DogSkin {
         for k in 0..<DogSkin.N where shells[k].isEnabled != on[k] { shells[k].isEnabled = on[k] }
         headPivot.transform = DogSkin.xform(r.R[J.head], r.S[J.head], r.T[J.head])
         jawPivot.transform = DogSkin.xform(r.R[J.jaw], r.S[J.jaw], r.T[J.jaw])
-        // 눈꺼풀: 감으면 앞을 덮고(0), 뜨면 위·뒤로 넘어감
+        // 눈 감기: 검은 눈을 위아래로 눌러 가는 선으로 (말티즈 눈가는 검은 테라 감으면 검은 선으로 보임)
+        // 0.4.0 까지는 밝은 살색 눈꺼풀 뚜껑(눈보다 큼)이 덮어, 감거나 반쯤 감으면 흰 눈알처럼 보여 무서웠음
         let lidv = min(1, max(r.job.pose.lid, 1 - r.job.eyeOpen))
-        let ang: Float = 2.45 * (1 - lidv)
-        for l in lids { l.orientation = Q.rx(-ang) }
+        let open: Float = 1 - lidv
+        let h: Float = 0.14 + 0.86 * open
+        for (i, e) in eyes.enumerated() {
+            e.scale = SIMD3<Float>(1, h, 1)
+            e.position = eyeRest[i] - SIMD3<Float>(0, D.eyeR * 0.35 * (1 - h), 0)
+        }
         if let tg = tongue {
             let tv = min(1, max(0, r.job.pose.tongue))
             let jr = D.rest[J.jaw]

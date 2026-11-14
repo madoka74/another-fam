@@ -104,6 +104,7 @@ struct PetState: Codable, Equatable {
     var walkM: Float = 0                                             // 오늘 산책한 거리
     var walkDay = ""
     var meals = 0
+    var bottle: Float = 0                                            // 젖병에 타 둔 분유 (1회분 = 1)
 
     init() {}
 
@@ -121,6 +122,7 @@ struct PetState: Codable, Equatable {
         poops = g(.poops, z.poops); padUses = g(.padUses, z.padUses); vaccines = g(.vaccines, z.vaccines)
         checkupAge = g(.checkupAge, z.checkupAge); jointUntil = g(.jointUntil, z.jointUntil); asleep = g(.asleep, z.asleep)
         walkM = g(.walkM, z.walkM); walkDay = g(.walkDay, z.walkDay); meals = g(.meals, z.meals)
+        bottle = g(.bottle, z.bottle)
     }
 
     // MARK: 나이

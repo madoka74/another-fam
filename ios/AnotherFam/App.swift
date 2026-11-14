@@ -15,7 +15,9 @@ struct AnotherFamApp: App {
         WindowGroup(id: "main") {
             HomeView()
         }
-        .defaultSize(width: 980, height: 720)
+        .defaultSize(width: 900, height: 660)
+        // 메인 창은 손 닿는 가까이·낮게 (0.4.0: 시스템이 정한 먼 자리에 떠 현실 물건과 겹쳐 보였음)
+        .defaultWindowPlacement { _, _ in WindowPlacement(.utilityPanel) }
         .onChange(of: phase) { _, p in
             if p == .active { AppModel.shared.wake() } else { AppModel.shared.sleep() }
         }
@@ -35,7 +37,7 @@ final class AppModel {
     var pet: PetState? = Store.load()
     var playOpen = false
     var notice: String?
-    var tab = 0                          // 메인 창 탭 (0 홈, 1 상점, 2 보관함, 3 설정)
+    var tab = 0                          // 메인 창 탭 (0 홈, 1 보관함, 2 상점, 3 설정)
     @ObservationIgnored var mainOpen = false
     @ObservationIgnored var openMain: (@MainActor () -> Void)?
     @ObservationIgnored var closeMain: (@MainActor () -> Void)?
