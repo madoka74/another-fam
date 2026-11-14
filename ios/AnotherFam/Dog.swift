@@ -112,20 +112,25 @@ final class Dog {
     }
 
     // MARK: 소리
-    func say(_ base0: String, gain g0: Double = -8, head: String? = nil) {
-        // 합성한 긴 울음(낑낑·하울·가는 소리)은 사이렌·고주파처럼 들려 실제 녹음으로 바꾸기 전까지 쓰지 않음 → 짧은 숨소리로
-        var base = base0, gain = g0
-        if base == "whine" || base == "whimper" || base == "howl" { base = "sigh"; gain -= 4 }
-        // 높이: 강아지일수록 높되 1.25배까지 (0.7.0 은 갓난 1.75배로 고주파처럼 들렸음)
-        let sp = min(1.25, pitch)
-        if let name = SoundBank.shared.play(base, on: mouth, gain: gain, speed: sp) {
-            anim.speak(SoundBank.shared.envelope(name), rate: Float(sp))
+    /// 목소리: 나이에 맞게 녹음한 소리를 고름 (아기 강아지 '_pup', 노견 '_old' 가 있으면 그것) — 0.9.0 부터 일레븐랩스로 만든 실제 같은 소리.
+    /// 높이를 억지로 바꾸지 않고 ±4% 만 흔들어 같은 소리도 매번 조금씩 다르게
+    func say(_ base: String, gain: Double = -8, head: String? = nil) {
+        let bank = SoundBank.shared
+        var name = base
+        if age < 90, bank.has(base + "_pup") { name = base + "_pup" }
+        else if stage == .senior, bank.has(base + "_old") { name = base + "_old" }
+        let young = base == "yip" || base == "mewl" || name.hasSuffix("_pup")
+        let sp = !young && age < 90 ? min(1.12, pitch) * Double.random(in: 0.97...1.03) : Double.random(in: 0.96...1.04)
+        if let n = bank.play(name, on: mouth, gain: gain, speed: sp) {
+            anim.speak(bank.envelope(n), rate: Float(sp))
         }
         if let head { anim.overlay(head) }
     }
 
     private func fx(_ base: String, gain: Double) {
-        SoundBank.shared.play(base, on: mouth, gain: gain, speed: 1)
+        let bank = SoundBank.shared
+        let name = stage == .senior && bank.has(base + "_old") ? base + "_old" : base
+        bank.play(name, on: mouth, gain: gain, speed: Double.random(in: 0.97...1.03))
     }
 
     private func bark() {

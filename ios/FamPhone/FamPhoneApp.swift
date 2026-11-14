@@ -175,14 +175,18 @@ enum Forecast {
     private static func text(_ k: String, _ p: PetState) -> String {
         let n = p.name + josa(p.name)
         let baby = Stage.of(p.age()).rawValue < Stage.social.rawValue
+        // 같은 상황도 그때그때 다르게 (늘 같은 문장이면 정해진 대로 울리는 기계처럼 느껴짐)
+        let say: [String]
         switch k {
-        case "food": return baby ? "\(n) 젖을 찾아요" : "\(n) 배고파해요"
-        case "water": return "\(n) 목말라해요"
-        case "fun": return "\(n) 심심해해요. 놀아 주세요"
-        case "love": return "\(n) 보고 싶어 해요"
-        case "mess": return "\(n) 실수를 했어요. 치워 주세요"
-        default: return "\(n) 기운이 없어 보여요"
+        case "food": say = baby ? ["젖을 찾아요", "낑낑대며 젖을 찾고 있어요", "배가 고픈지 꼬물거려요"]
+                                : ["배고파해요", "밥그릇 앞을 서성이고 있어요", "밥 달라고 기다리고 있어요"]
+        case "water": say = ["목말라해요", "빈 물그릇을 핥고 있어요", "물을 찾고 있어요"]
+        case "fun": say = ["심심해해요", "놀자고 엉덩이를 들고 있어요", "혼자 장난감을 굴리다 멈췄어요"]
+        case "love": say = ["보고 싶어 해요", "문 쪽을 바라보며 기다려요", "작게 낑낑대며 기다리고 있어요"]
+        case "mess": say = ["실수를 했어요. 치워 주세요", "바닥에 실수를 했어요"]
+        default: say = ["기운이 없어 보여요", "축 처져 있어요"]
         }
+        return "\(n) " + (say.randomElement() ?? say[0])
     }
 
     /// 이름 끝 글자에 받침이 있으면 '이가'(깨몽이가), 없으면 '가'(몽이가) — 받침 있는 이름은 부를 때 '이'를 붙임
@@ -217,7 +221,9 @@ enum Forecast {
             if at.count + already.subtracting(at.keys).count >= kinds.count { break }
         }
         var out: [PlannedAlert] = []
-        for (k, t) in at {
+        for (k, t0) in at {
+            // 그때의 기분·몸 상태에 따라 조금 이르거나 늦게 (지금 이미 그런 것은 그대로)
+            let t = t0 > now + 60 ? max(now + 120, t0 + Double.random(in: -900...900)) : t0
             out.append(PlannedAlert(kind: k, at: night ? t : daytime(t), text: label[k] ?? ""))
         }
         return out.sorted { $0.at < $1.at }

@@ -115,27 +115,16 @@ struct PhoneView: View {
         return out
     }
 
-    // MARK: 알림
+    // MARK: 알림 — 미리 정해진 목록은 보여 주지 않음 (사용자가 하기에 따라 달라지는 일이라 예정표처럼 보이면 어색함)
     private var alertsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("다음 알림", systemImage: "bell.fill").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            Label("알림", systemImage: "bell.fill").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
             if m.allowed == false {
                 Button { m.askPermission() } label: {
                     Text("알림 허용하기").font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity).padding(.vertical, 10)
                 }
                 .buttonStyle(.borderedProminent)
             }
-            if m.upcoming.isEmpty {
-                Text("당분간 없어요").font(.subheadline).foregroundStyle(.secondary)
-            }
-            ForEach(m.upcoming) { a in
-                HStack {
-                    Text(a.text).font(.subheadline)
-                    Spacer()
-                    Text(when(a.at)).font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
-                }
-            }
-            Divider().overlay(.white.opacity(0.1))
             Toggle("밤(23~7시)에도 알림", isOn: Binding(get: { m.night }, set: { m.night = $0 })).font(.subheadline)
         }
         .padding(18)
@@ -170,14 +159,6 @@ struct PhoneView: View {
         return "\(Int(s / 86400))일 전"
     }
 
-    private func when(_ t: Double) -> String {
-        let d = Date(timeIntervalSince1970: t)
-        if t - Date().timeIntervalSince1970 < 60 { return "곧" }
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = Calendar.current.isDateInToday(d) ? "a h:mm" : "M/d a h:mm"
-        return f.string(from: d)
-    }
 }
 
 struct Ring: View {
