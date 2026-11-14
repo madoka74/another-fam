@@ -172,7 +172,9 @@ final class DogStage {
         a.lookOn = sleeping ? 0 : 1
         let job = a.tick(dt)
         sk.update(job)
-        sk.setTone(clean: pet.clean, thin: Stage.of(pet.age()) == .senior ? 1 : 0)
+        let old = Growth.old(Float(pet.age()))
+        sk.setTone(clean: pet.clean, thin: old)
+        sk.setEyeAge(old)
         dog.scale = SIMD3<Float>(repeating: g)
         placeCamera()
     }

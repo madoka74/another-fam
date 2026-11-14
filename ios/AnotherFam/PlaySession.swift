@@ -23,8 +23,6 @@ final class PlaySession {
 
     // 화면에 보이는 것
     var cardOn = false
-    var panelOn = false                  // 공간 안 메뉴판 (보관함·상점·설정)
-    var panelTab = 1                     // 1 보관함 · 2 상점 · 3 설정
     var toastText: String?
     var shown = PetState()
     var walking = false
@@ -33,8 +31,6 @@ final class PlaySession {
 
     @ObservationIgnored private var card: Entity?
     @ObservationIgnored private var cardUntil: Double = 0
-    @ObservationIgnored private var panel: Entity?
-    @ObservationIgnored private var panelFrom = SIMD3<Float>(0, 0, 0)
     @ObservationIgnored private var toastUntil: Double = 0
     @ObservationIgnored private var publishAt: Double = 0
     @ObservationIgnored private var saveAt: Double = 0
@@ -42,6 +38,7 @@ final class PlaySession {
     @ObservationIgnored private var homeM: simd_float4x4?
     @ObservationIgnored private var homeWaitUntil: Double = 0
     @ObservationIgnored private var homeNew = false
+    @ObservationIgnored private var homeLost = false             // 저장된 집 고정점이 기기에 없음 → 기다리지 않고 새로 만들어 확정
     @ObservationIgnored private var oldHomeId: UUID?           // 지난 집을 제때 못 찾아 임시 집을 만든 동안: 늦게라도 찾으면 원래 자리로
     @ObservationIgnored private var spawned = false
     @ObservationIgnored private var makingHome = false
@@ -79,6 +76,14 @@ final class PlaySession {
         now = CACurrentMediaTime()
         startAt = now
         homeWaitUntil = now + 25        // 지난 집 자리를 다시 알아보는 데 오래 걸릴 수 있음 (0.4.0: 10초 뒤 새 집 → 수건이 내 앞에 뜸)
+        if let h = homeId {
+            // 기기에 그 고정점이 남아 있는지 먼저 확인: 있으면 넉넉히(45초) 기다리고, 없으면 바로 새 집
+            // (0.5.x: 없어진 고정점을 매번 25초 기다린 뒤 임시 집을 시선 앞에 만들고, 확정하지 않아 켤 때마다 자리가 바뀌었음)
+            Task {
+                guard let ids = await room.savedAnchorIds() else { return }
+                if ids.contains(h) { homeWaitUntil = startAt + 45 } else { homeLost = true }
+            }
+        }
         if let d = Dog(self) {
             dog = d
             d.entity.isEnabled = false
@@ -104,58 +109,6 @@ final class PlaySession {
         root.addChild(e)
     }
 
-    func attachPanel(_ e: Entity) {
-        panel = e
-        e.isEnabled = false
-        root.addChild(e)
-    }
-
-    /// 메뉴판 열기: 메인 창 대신 공간 안에서 — 강아지를 가리지 않는 쪽(정면·좌·우)에, 앞에 현실 물건이 없는 가까운 자리
-    /// (0.4.0 메인 창은 멀리 떠 현실과 겹쳤고, 0.5.0 은 아래쪽 방석 위에 떠 카드 뒤에 가려졌음)
-    func openPanel(_ tab: Int) {
-        panelTab = tab
-        cardOn = false
-        panelOn = true
-        panel?.isEnabled = true                                  // 크기를 재려면 켜져 있어야 함
-        placePanel()
-    }
-
-    func closePanel() { panelOn = false }
-
-    private func placePanel() {
-        guard let e = panel else { return }
-        let eye = userPos, f = userFwd
-        let right = SIMD3<Float>(-f.z, 0, f.x)
-        var side: Float = 0                                      // 강아지가 오른쪽이면 +
-        if let d = dog, d.entity.isEnabled {
-            let v = d.bodyWorld - eye
-            side = simd_dot(v, right) / max(0.1, simd_length(SIMD2<Float>(v.x, v.z)))
-        }
-        let order: [Float] = side > 0.15 ? [-0.6, 0, 0.6] : (side < -0.15 ? [0.6, 0, -0.6] : [-0.6, 0.6, 0])
-        // 판 크기(크기 1일 때). 아직 못 재면 900×660pt 를 1pt ≈ 0.75mm 로 어림
-        let vb = e.visualBounds(relativeTo: e).extents
-        let w1: Float = vb.x > 0.2 ? vb.x : 0.675
-        let h1: Float = vb.y > 0.15 ? vb.y : 0.495
-        let want: Float = 0.8
-        var best: (a: Float, free: Float) = (order[0], -1)
-        for a in order {
-            let dir = f * cos(a) + right * sin(a)
-            let k = 0.64 * want / 0.8 / w1                         // 0.8m 앞에서 너비 64cm
-            let c = eye + dir * want + SIMD3<Float>(0, -0.18, 0)
-            let fr = freeDist(eye: eye, center: c, halfW: w1 * k / 2, halfH: h1 * k / 2, skip: [e])
-            if fr >= want + 0.05 { best = (a, fr); break }
-            if fr > best.free { best = (a, fr) }
-        }
-        let dir = f * cos(best.a) + right * sin(best.a)
-        let dist = min(want, max(0.5, best.free - 0.1))
-        let at = eye + dir * dist + SIMD3<Float>(0, -0.18 * dist / want, 0)
-        let k = 0.64 * dist / 0.8 / w1
-        e.position = at
-        e.look(at: at - (eye - at), from: at, relativeTo: nil)
-        e.scale = SIMD3<Float>(repeating: k)
-        panelFrom = eye
-    }
-
     /// 눈에서 판(가운데·네 모서리)까지 가는 길에 처음 부딪히는 것까지의 거리 (판·강아지는 빼고). 없으면 아주 큰 값
     private func freeDist(eye: SIMD3<Float>, center: SIMD3<Float>, halfW: Float, halfH: Float, skip: [Entity]) -> Float {
         guard let sc = root.scene else { return .infinity }
@@ -174,6 +127,21 @@ final class PlaySession {
                 // 판 쪽 거리로 바꿔 셈 (모서리 길은 가운데보다 김)
                 best = min(best, h.distance * simd_distance(eye, center) / len)
             }
+        }
+        return best
+    }
+
+    /// 이 자리 바로 아래로 처음 닿는 면의 높이 — 스캔한 가구(소파·탁자 등)·바닥·바닥에 놓은 것 (강아지·장난감·카드는 뺌)
+    func surfaceBelow(_ p: SIMD3<Float>, from top: Float) -> Float? {
+        guard let sc = root.scene else { return nil }
+        let fy = room.floorY ?? p.y
+        let a = SIMD3<Float>(p.x, top, p.z), b = SIMD3<Float>(p.x, fy - 0.05, p.z)
+        var best: Float?
+        for h in sc.raycast(from: a, to: b, query: .all, mask: .all, relativeTo: nil) {
+            if let d = dog, under(h.entity, d.entity) { continue }
+            if let c = card, under(h.entity, c) { continue }
+            if props.contains(where: { $0.kind != .fixed && under(h.entity, $0.entity) }) { continue }
+            best = max(best ?? -999, h.position.y)
         }
         return best
     }
@@ -248,7 +216,7 @@ final class PlaySession {
         let q = room.nav.openSpot(near: want, clear: 0.35) ?? want
         var m = matrix_identity_float4x4
         m.columns.3 = SIMD4<Float>(q.x, fy, q.y, 1)
-        if let old = homeId { oldHomeId = old }       // 지난 집은 지우지 않고 계속 찾음
+        if let old = homeId, !homeLost { oldHomeId = old }       // 지난 집이 기기에 있으면 지우지 않고 계속 찾음
         Task {
             if let id = await room.addAnchor(m) {
                 homeId = id
@@ -270,7 +238,7 @@ final class PlaySession {
         guard headOK else { return }
         guard room.floorY != nil, room.floorFromPlane || now - startAt > 8 || !room.sensingOK else { note("바닥을 찾는 중"); return }
         if homeM == nil {
-            if homeId != nil && now < homeWaitUntil { note("집을 찾는 중 · 주변을 둘러봐 주세요"); return }
+            if homeId != nil && !homeLost && now < homeWaitUntil { note("집을 찾는 중 · 주변을 둘러봐 주세요"); return }
             if !(room.nav.ready || now - startAt > 12) { note("바닥을 둘러봐 주세요"); return }
             makeHome()
             return
@@ -602,10 +570,6 @@ final class PlaySession {
 
     /// 강아지 메뉴 카드: 강아지 위에서 나를 봄. 강아지가 아직 없으면(준비 중) 내 앞에
     private func showCard() {
-        if let p = panel {
-            if p.isEnabled != panelOn { p.isEnabled = panelOn }
-            if panelOn && simd_distance(userPos, panelFrom) > 1.2 { placePanel() }     // 멀리 걸어가면 다시 곁으로
-        }
         guard let c = card else { return }
         if cardOn && now >= cardUntil { cardOn = false }
         if toastText != nil && now >= toastUntil { toastText = nil }
@@ -626,7 +590,7 @@ final class PlaySession {
         let d0 = simd_distance(userPos, at)
         if d0 > 0.3 {
             let b = c.visualBounds(relativeTo: c).extents
-            let fr = freeDist(eye: userPos, center: at, halfW: b.x * k / 2, halfH: b.y * k / 2, skip: [c] + (panel.map { [$0] } ?? []))
+            let fr = freeDist(eye: userPos, center: at, halfW: b.x * k / 2, halfH: b.y * k / 2, skip: [c])
             if fr < d0 {
                 let nd = max(0.4, fr - 0.06)
                 at = userPos + (at - userPos) * (nd / d0)
@@ -768,7 +732,7 @@ final class PlaySession {
         if sp > 7 { v *= 7 / sp }
         p.setVelocity(v, spin: SIMD3<Float>(Float.random(in: -3...3), Float.random(in: -3...3), Float.random(in: -3...3)) * min(1, sp))
         p.thrownAt = now
-        if p.kind == .toy && sp > 1.1 { dog?.thrown(p) }
+        if p.kind == .toy { if sp > 1.1 { dog?.thrown(p) } else { dog?.noticed(p) } }      // 던지면 쫓아가고, 곁에 내려놓으면 다가와 봄
     }
 
     // MARK: 산책·거품

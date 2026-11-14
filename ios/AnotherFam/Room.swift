@@ -340,6 +340,13 @@ final class Room {
         return a.id
     }
 
+    /// 기기에 저장돼 있는 이 앱의 공간 고정점 id 들 (앱을 다시 켜도 남음). 못 읽으면 nil
+    func savedAnchorIds() async -> Set<UUID>? {
+        guard let w = world else { return nil }
+        guard let all = try? await w.allAnchors else { return nil }
+        return Set(all.map { $0.id })
+    }
+
     func removeAnchor(_ id: UUID) async {
         guard let w = world else { return }
         try? await w.removeAnchor(forID: id)

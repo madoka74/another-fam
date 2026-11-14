@@ -16,6 +16,9 @@ struct AnotherFamApp: App {
             HomeView()
         }
         .defaultSize(width: 900, height: 660)
+        // 팸과 함께하는 동안 메인 메뉴는 손 닿는 가까이(시스템이 사람 곁에 두는 자리), 아닐 땐 시선 정면(기본).
+        // visionOS 는 앱이 창을 공간의 정한 점(예: 왼쪽)에 놓는 API 를 주지 않음 — 정면·곁(utilityPanel)·다른 창 옆만 고를 수 있음
+        .defaultWindowPlacement { _, _ in AppModel.nearWindow ? WindowPlacement(.utilityPanel) : WindowPlacement(nil) }
         .onChange(of: phase) { _, p in
             if p == .active { AppModel.shared.wake() } else { AppModel.shared.sleep() }
         }
@@ -43,6 +46,7 @@ final class AppModel {
     @ObservationIgnored var openAction: (@MainActor () async -> Bool)?
     @ObservationIgnored var closeAction: (@MainActor () async -> Void)?
     @ObservationIgnored private var busy = false
+    nonisolated(unsafe) static var nearWindow = false
 
     /// 값 고치기: 공간이 열려 있으면 거기(한 곳)에서 고치고, 아니면 여기서 고치고 저장
     func mutate(_ f: (inout PetState) -> Void) {
@@ -141,6 +145,7 @@ final class AppModel {
         Task {
             let ok = await openAction?() ?? false
             playOpen = ok
+            AppModel.nearWindow = ok
             busy = false
             if ok { closeMain?() }          // 강아지에게 집중: 메인 창은 닫아 둠 (강아지를 누르면 메뉴)
             if !ok { notice = "공간을 열지 못했어요. 다른 앱의 몰입 화면을 닫고 다시 해 주세요." }
@@ -151,17 +156,17 @@ final class AppModel {
         Task {
             if playOpen, let closeAction { await closeAction() }
             playOpen = false
+            AppModel.nearWindow = false
         }
     }
 
-    func playClosed() { playOpen = false }
+    func playClosed() { playOpen = false; AppModel.nearWindow = false }
 
-    /// 메인 창을 그 탭으로 (닫혀 있으면 엶) — 함께하는 동안 메인 창은 필요할 때만 뜸
+    /// 메인 메뉴(하나뿐인 메뉴)를 그 탭으로 엶. 뜨면 팸 카드는 바로 닫힘
     func showMain(tab t: Int, note: String? = nil) {
         if let note { notice = note }
-        // 함께하는 동안엔 창 대신 공간 안 메뉴판으로 (창은 시스템이 정한 자리에 떠 현실·카드와 겹쳤음)
-        if playOpen, let s = session { s.openPanel(max(1, t)); return }
         tab = t
+        session?.closeCard()
         if !mainOpen { openMain?() }
     }
 }

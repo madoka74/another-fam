@@ -71,7 +71,7 @@ final class Prop {
             add(.generateBox(width: 0.52, height: 0.014, depth: 0.42, cornerRadius: 0.007), Geo.mat(SIMD3<Float>(0.78, 0.70, 0.60), rough: 1), at: SIMD3<Float>(0, 0.007, 0))
             add(.generateBox(width: 0.50, height: 0.004, depth: 0.10, cornerRadius: 0.002), Geo.mat(SIMD3<Float>(0.64, 0.50, 0.42), rough: 1), at: SIMD3<Float>(0, 0.0155, 0.12))
             r = 0.26
-            shape = ShapeResource.generateBox(size: SIMD3<Float>(0.52, 0.02, 0.42)).offsetBy(translation: SIMD3<Float>(0, 0.01, 0))
+            shape = ShapeResource.generateBox(size: SIMD3<Float>(0.52, 0.015, 0.42)).offsetBy(translation: SIMD3<Float>(0, 0.0075, 0))
         case "bed":
             add(Geo.lathe([(0, 0), (0.25, 0), (0.27, 0.03), (0.265, 0.085), (0.235, 0.10), (0.205, 0.085), (0.19, 0.04), (0, 0.035)], seg: 32),
                 Geo.mat(SIMD3<Float>(0.62, 0.66, 0.72), rough: 1))
@@ -141,6 +141,18 @@ final class Prop {
             r = 0.08; shape = ShapeResource.generateBox(size: SIMD3<Float>(0.16, 0.03, 0.16)).offsetBy(translation: SIMD3<Float>(0, 0.015, 0))
         }
         radius = r
+        // 손에 쥐는 것·장난감은 부딪힘 모양을 실제 그린 모양의 상자에 맞춤 (0.5.x: 어림한 상자가 모양보다 커서 블랭키씨 등이 바닥·담요 위에 떠 있었음)
+        if kind == .toy || kind == .tool {
+            let vb = entity.visualBounds(relativeTo: entity)
+            let e = vb.extents
+            if e.x > 0.003 && e.y > 0.003 && e.z > 0.003 && e.x < 1 && e.y < 1 && e.z < 1 {
+                if id == "ball" {
+                    shape = ShapeResource.generateSphere(radius: max(e.x, e.y, e.z) / 2).offsetBy(translation: vb.center)
+                } else {
+                    shape = ShapeResource.generateBox(size: e).offsetBy(translation: vb.center)
+                }
+            }
+        }
         entity.components.set(PropTag(id: uid))
         entity.components.set(CollisionComponent(shapes: shapes ?? [shape]))
         entity.components.set(InputTargetComponent())
@@ -150,6 +162,7 @@ final class Prop {
             var b = PhysicsBodyComponent(massProperties: PhysicsMassProperties(shape: shape, mass: mass),
                                          material: PhysicsMaterialResource.generate(friction: id == "blanky" ? 0.95 : 0.7, restitution: bounce), mode: .dynamic)
             b.linearDamping = 0.05
+            b.isContinuousCollisionDetectionEnabled = true        // 빨리 던져도 소파·벽(얇은 스캔 면)을 뚫고 지나가지 않게
             b.angularDamping = id == "ball" ? 0.15 : 0.6
             entity.components.set(b)
             entity.components.set(PhysicsMotionComponent())

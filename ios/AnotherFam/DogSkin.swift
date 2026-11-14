@@ -140,7 +140,7 @@ final class DogSkin {
             pc.sampler = repeatSampler
             // 털 가닥 = 높이 무늬가 문턱을 넘는 곳. 그 자리는 완전히 불투명(0 아니면 1인 겹마다의 무늬)
             // 0.5.0 까지: 높이 무늬를 그대로 불투명도로 써서, 문턱을 넘은 가닥도 높이값(0.1~0.9)만큼 반투명 → 몸이 비쳐 보였음
-            let thr = min(0.95, 0.08 + 0.84 * t * t + thin * 0.06 * t)
+            let thr = min(0.95, 0.08 + 0.84 * t * t + thin * 0.12 * t)
             m.baseColor = .init(tint: color(c), texture: pc)
             if let mk = mask(thr) {
                 var pm = MaterialParameters.Texture(mk)
@@ -190,6 +190,21 @@ final class DogSkin {
     }
 
     /// 털 빛깔 (깨끗함·노견 성김)이 눈에 띄게 달라졌을 때만 재질을 다시 만듦
+    private var eyeOld: Float = -1
+    /// 노견의 눈: 수정체가 뿌옇게 푸른 잿빛으로 (핵경화)
+    func setEyeAge(_ old: Float) {
+        let k = (old * 10).rounded() / 10
+        guard k != eyeOld else { return }
+        eyeOld = k
+        var em = PhysicallyBasedMaterial()
+        let young = SIMD3<Float>(0.035, 0.022, 0.016), cloud = SIMD3<Float>(0.34, 0.38, 0.44)
+        em.baseColor = .init(tint: DogSkin.color(young + (cloud - young) * (0.6 * k)))
+        em.roughness = .init(floatLiteral: 0.06 + 0.25 * k)
+        em.clearcoat = .init(scale: 1)
+        em.clearcoatRoughness = .init(scale: 0.03 + 0.2 * k)
+        for e in eyes { e.model?.materials = [em] }
+    }
+
     func setTone(clean: Float, thin: Float) {
         let key = (clean * 10).rounded() + (thin * 4).rounded() * 100
         guard key != tone else { return }

@@ -21,6 +21,13 @@ struct HomeView: View {
                 AdoptView()
             }
         }
+        // 팸과 함께하는 동안엔 메뉴를 닫아 팸에 집중 (닫아도 팸을 바라보고 집으면 카드의 '메뉴'로 다시 엶)
+        .ornament(visibility: model.playOpen ? .visible : .hidden, attachmentAnchor: .scene(.topTrailing), contentAlignment: .bottomTrailing) {
+            Button { dismissWindow(id: "main") } label: { Label("닫기", systemImage: "xmark") }
+                .buttonBorderShape(.capsule)
+                .padding(8)
+                .glassBackgroundEffect()
+        }
         .overlay(alignment: .bottom) {
             if let n = model.notice {
                 HStack(spacing: 12) {
@@ -45,6 +52,7 @@ struct HomeView: View {
             model.openMain = { ow(id: "main") }
             model.closeMain = { dw(id: "main") }
             model.mainOpen = true
+            model.session?.closeCard()
             model.wake()
         }
         .onDisappear { model.mainOpen = false }

@@ -248,7 +248,17 @@ final class DogAnimator {
             p.q[J.tail1] = p.q[J.tail1] * Q.rx(-0.9 * young)
             for j in [J.tail2, J.tail3, J.tail4] { p.q[j] = p.q[j] * Q.rx(-0.35 * young) }
         }
-        let amp = min(1.4, p.wag * wagBoost) * (a < 14 ? 0 : (a < 21 ? 0.4 : 1))
+        // 나이 듦: 고개·꼬리가 처지고 몸이 조금 낮아지고 눈꺼풀이 무거움 (노견이 젊은 개와 똑같아 보였음)
+        let old = Growth.old(a)
+        if old > 0.01 {
+            p.q[J.neck] = p.q[J.neck] * Q.rx(0.16 * old)
+            p.q[J.head] = p.q[J.head] * Q.rx(0.06 * old)
+            p.q[J.tail1] = p.q[J.tail1] * Q.rx(-0.5 * old)
+            p.q[J.spine] = p.q[J.spine] * Q.rx(-0.04 * old)
+            p.root.y -= 0.006 * old
+            if !asleep { p.lid = max(p.lid, 0.22 * old) }
+        }
+        let amp = min(1.4, p.wag * wagBoost) * (a < 14 ? 0 : (a < 21 ? 0.4 : 1)) * (1 - 0.45 * old)
         if amp > 0.02 && !asleep {
             wagPh += dt * (3.2 + 2.6 * min(1.2, amp)) * 2 * .pi
             let x = SIMD3<Float>(1, 0, 0)

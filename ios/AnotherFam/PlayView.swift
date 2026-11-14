@@ -11,11 +11,9 @@ struct PlayView: View {
         RealityView { content, attachments in
             content.add(s.root)
             if let c = attachments.entity(for: "card") { s.attachCard(c) }
-            if let m = attachments.entity(for: "menu") { s.attachPanel(m) }
             s.updateSub = content.subscribe(to: SceneEvents.Update.self) { e in s.tick(Float(e.deltaTime)) }
         } attachments: {
             Attachment(id: "card") { StatusCard(s: s) }
-            Attachment(id: "menu") { SpacePanel(s: s) }
         }
         // 강아지를 바라보고 집으면 상태 카드
         .gesture(SpatialTapGesture().targetedToEntity(where: .has(DogTag.self)).onEnded { _ in s.tapDog() })
@@ -33,42 +31,6 @@ struct PlayView: View {
             s.stop()
             if !AppModel.shared.mainOpen { openWindow(id: "main") }      // 쉬러 가면 메인 창으로
         }
-    }
-}
-
-/// 공간 안 메뉴판: 보관함 · 상점 · 설정 (메인 창의 같은 화면을 그대로 씀)
-struct SpacePanel: View {
-    let s: PlaySession
-    private var model: AppModel { AppModel.shared }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 16) {
-                Picker("", selection: Binding(get: { s.panelTab }, set: { s.panelTab = $0 })) {
-                    Text("보관함").tag(1)
-                    Text("상점").tag(2)
-                    Text("설정").tag(3)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 420)
-                Spacer()
-                Button { s.closePanel(); model.notice = nil } label: { Image(systemName: "xmark") }.buttonBorderShape(.circle)
-            }
-            .padding(.horizontal, 28).padding(.top, 24)
-            if let n = model.notice {
-                Text(n).font(.callout).foregroundStyle(.orange).padding(.top, 12)
-            }
-            Group {
-                switch s.panelTab {
-                case 2: ShopTab()
-                case 3: SettingsTab()
-                default: StorageTab()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(width: 900, height: 660)
-        .glassBackgroundEffect()
     }
 }
 
@@ -118,51 +80,46 @@ struct CardButton: View {
     var body: some View {
         Button(action: action) {
             VStack(spacing: 4) {
-                Image(systemName: icon).font(.title)
+                Image(systemName: icon).font(.title2)
                 Text(title).font(.callout.weight(.medium))
             }
-            .frame(width: 88, height: 74)
+            .frame(width: 84, height: 66)
         }
-        .buttonBorderShape(.roundedRectangle(radius: 20))
+        .buttonBorderShape(.roundedRectangle(radius: 18))
     }
 }
 
-/// 강아지 메뉴 카드 (강아지를 바라보고 집으면 뜸): 상태 + 할 일 + 짧은 알림
+/// 강아지를 바라보고 집으면 뜨는 작은 카드: 지금 상태 + 메뉴에 없는 바로 할 일(밥·물) + 메뉴 열기.
+/// 보관함·상점·쉬기·설정은 모두 메인 메뉴 한 곳에 (0.5.x: 카드에 기능을 몰아넣고 공간 안 메뉴판까지 만들어 같은 메뉴가 셋이 됐음)
 struct StatusCard: View {
     let s: PlaySession
 
     var body: some View {
         let p = s.shown
-        VStack(spacing: 18) {
+        VStack(spacing: 16) {
             if s.cardOn {
-                HStack(spacing: 12) {
-                    Text(p.name).font(.title.weight(.bold))
+                HStack(spacing: 10) {
+                    Text(p.name).font(.title2.weight(.bold))
                     Text(PetState.ageText(p.age())).font(.title3).foregroundStyle(.secondary)
-                    if p.asleep { Image(systemName: "zzz").font(.title3).foregroundStyle(.secondary) }
-                    Spacer(minLength: 16)
-                    Label("\(p.points)", systemImage: "p.circle.fill").font(.title3.weight(.semibold))
+                    if p.asleep { Image(systemName: "zzz").foregroundStyle(.secondary) }
+                    Spacer(minLength: 12)
                     Button { s.closeCard() } label: { Image(systemName: "xmark") }.buttonBorderShape(.circle)
                 }
-                HStack(spacing: 16) {
-                    let items = Needs.list(p)
-                    ForEach(0..<items.count, id: \.self) { i in NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 52) }
-                }
-                // 할 일: 밥·물은 바로, 나머지는 필요할 때만 메인 창을 띄움
                 HStack(spacing: 14) {
+                    let items = Needs.list(p)
+                    ForEach(0..<items.count, id: \.self) { i in NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 46) }
+                }
+                HStack(spacing: 12) {
                     CardButton(icon: "fork.knife", title: "밥") { s.feed() }
-                    CardButton(icon: "drop.fill", title: "물") { s.giveWater() }
-                    CardButton(icon: "archivebox.fill", title: "보관함") { AppModel.shared.showMain(tab: 1) }
-                    CardButton(icon: "cart.fill", title: "상점") { AppModel.shared.showMain(tab: 2) }
-                    CardButton(icon: "house.fill", title: "쉬기") { AppModel.shared.rest() }
+                    if p.age() >= 21 { CardButton(icon: "drop.fill", title: "물") { s.giveWater() } }
+                    CardButton(icon: "square.grid.2x2.fill", title: "메뉴") { AppModel.shared.showMain(tab: AppModel.shared.tab) }
                 }
             }
             if let t = s.toastText { Text(t).font(.title3) }
             if s.loading { Button { AppModel.shared.rest() } label: { Label("쉬기", systemImage: "house.fill") } }
         }
-        // 크기를 정해 둠 (0.4.0: 너비가 정해지지 않아 판이 길게 늘어나고 안의 것은 작게 보였음)
-        .frame(width: s.cardOn ? 700 : nil)
-        .fixedSize(horizontal: !s.cardOn, vertical: true)
-        .padding(.horizontal, 28).padding(.vertical, 22)
+        .fixedSize()
+        .padding(.horizontal, 24).padding(.vertical, 20)
         .glassBackgroundEffect()
         .opacity(s.cardOn || s.toastText != nil ? 1 : 0)
     }

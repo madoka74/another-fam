@@ -52,6 +52,9 @@ struct Growth: Sendable {
     var coatBody: Float, coatLong: Float
     var legY: Float { scale[5].y }
 
+    /// 나이 듦 정도 (7살부터 서서히 0 → 13살 1): 자세·눈·털·움직임에 씀
+    static func old(_ age: Float) -> Float { Q.interp(age, [2555, 3650, 4745], [0, 0.55, 1]) }
+
     static func at(_ age: Float) -> Growth {
         let a = max(0, age)
         let g = Q.interp(a, [0, 14, 28, 56, 90, 180, 300, 365], [0.30, 0.36, 0.42, 0.52, 0.64, 0.86, 0.97, 1.0])
