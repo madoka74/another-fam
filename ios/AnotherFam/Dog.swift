@@ -13,6 +13,7 @@ final class Dog {
 
     let entity = Entity()
     let mouth = Entity()                 // 소리 나는 자리 (입)
+    private let hit = Entity()           // 바라보고 집는 자리 (갓난 강아지는 작아서 넉넉히 키움)
     let anim: DogAnimator
     let skin: DogSkin
     unowned let s: PlaySession
@@ -58,8 +59,7 @@ final class Dog {
         skin = sk
         entity.addChild(sk.entity)
         entity.addChild(mouth)
-        // 눌러서 상태 보기
-        let hit = Entity()
+        // 눌러서 메뉴 보기
         hit.position = SIMD3<Float>(0, 0.16, 0.02)
         hit.components.set(CollisionComponent(shapes: [.generateBox(size: SIMD3<Float>(0.2, 0.3, 0.42))]))
         hit.components.set(InputTargetComponent())
@@ -194,8 +194,19 @@ final class Dog {
     private func supportY(_ x: Float, _ z: Float) -> Float {
         let fy = s.room.floorY ?? pos.y
         if let p = onPerch { return p.center.y }
-        return fy
+        // 담요·방석·패드 위에서는 그 높이만큼 올라섬 (0.1.x 는 바닥 높이만 봐서 묻혔음)
+        var y = fy
+        let w = SIMD3<Float>(x, fy, z)
+        for p in s.props where p.kind == .fixed {
+            if let t = p.top(at: w) { y = max(y, p.pos.y + t) }
+        }
+        return y
     }
+
+    /// 안겨 있는지 (손이 강아지를 가리지 않게 화면에서 손 보이기를 끔)
+    var holding: Bool { act == .held }
+    /// 이 물건 위에 있는지 (강아지가 올라가 있는 잠자리는 손으로 옮겨지지 않게)
+    func isOn(_ p: Prop) -> Bool { p.top(at: pos) != nil }
 
     // MARK: 행동 바꾸기
     private func begin(_ a: Act, for dur: Double = 0) {
@@ -348,6 +359,7 @@ final class Dog {
         entity.position = pos
         entity.orientation = Q.ry(yaw)
         entity.scale = SIMD3<Float>(repeating: g)
+        hit.scale = SIMD3<Float>(repeating: max(1, 0.55 / g))
         // 기분에 따른 꼬리·숨
         let p = pet
         anim.asleep = act == .sleep && phase >= 2
@@ -913,6 +925,21 @@ final class Dog {
     // MARK: 쓰다듬기
     private func pettedStep(_ dt: Float) {
         var p = pet
+        if baby {
+            // 갓난 강아지: 어른 동작(서서 기대기·배 보이기)은 못 함 — 엎드린 채 손 쪽으로 꼬물거리고 가늘게 욺
+            if touching {
+                p.love = min(1, p.love + 0.035 * dt)
+                p.bond = min(1, p.bond + 0.0012 * dt)
+                pet = p
+                if anim.posture != "newborn" { anim.setPosture("newborn") }
+                else if anim.current != "nb_root" && anim.current != "nb_squirm" { anim.hold(Bool.random() ? "nb_root" : "nb_squirm") }
+                if s.now > nextVoice { nextVoice = s.now + Double.random(in: 4...9); say("mewl", gain: -18, head: "whine") }
+            } else if untouchT > 1.3 {
+                anim.stop()
+                begin(.idle, for: 2)
+            }
+            return
+        }
         if touching {
             let brush = s.props.contains { $0.id == "brush" && $0.heldBy != nil && simd_distance($0.pos, pos) < 0.35 }
             p.love = min(1, p.love + 0.035 * dt)

@@ -4,16 +4,18 @@ import SwiftUI
 struct HomeView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     private var model: AppModel { AppModel.shared }
 
     var body: some View {
         Group {
             if model.pet != nil {
-                TabView {
-                    HomeTab().tabItem { Label("홈", systemImage: "pawprint.fill") }
-                    ShopTab().tabItem { Label("상점", systemImage: "cart.fill") }
-                    StorageTab().tabItem { Label("보관함", systemImage: "archivebox.fill") }
-                    SettingsTab().tabItem { Label("설정", systemImage: "gearshape.fill") }
+                TabView(selection: Binding(get: { model.tab }, set: { model.tab = $0 })) {
+                    HomeTab().tabItem { Label("홈", systemImage: "pawprint.fill") }.tag(0)
+                    ShopTab().tabItem { Label("상점", systemImage: "cart.fill") }.tag(1)
+                    StorageTab().tabItem { Label("보관함", systemImage: "archivebox.fill") }.tag(2)
+                    SettingsTab().tabItem { Label("설정", systemImage: "gearshape.fill") }.tag(3)
                 }
             } else {
                 AdoptView()
@@ -39,8 +41,13 @@ struct HomeView: View {
                 }
             }
             model.closeAction = { await close() }
+            let ow = openWindow, dw = dismissWindow
+            model.openMain = { ow(id: "main") }
+            model.closeMain = { dw(id: "main") }
+            model.mainOpen = true
             model.wake()
         }
+        .onDisappear { model.mainOpen = false }
         .task {
             // 공간을 열지 않은 동안에도 시간은 흐름
             while !Task.isCancelled {

@@ -4,6 +4,8 @@ import RealityKit
 /// 함께하는 공간 화면
 struct PlayView: View {
     @State private var s = PlaySession()
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
 
     var body: some View {
         RealityView { content, attachments in
@@ -17,8 +19,18 @@ struct PlayView: View {
         .gesture(SpatialTapGesture().targetedToEntity(where: .has(DogTag.self)).onEnded { _ in s.tapDog() })
         // 그릇·패드·치울 것: 바라보고 집으면 채우기·갈기·치우기
         .simultaneousGesture(SpatialTapGesture().targetedToEntity(where: .has(PropTag.self)).onEnded { v in s.tapProp(v.entity) })
-        .task { await s.start() }
-        .onDisappear { s.stop() }
+        // 안고 있는 동안은 진짜 손이 강아지 위에 겹쳐 그려지지 않게 (손에 가려 강아지가 흐릿했음)
+        .upperLimbVisibility(s.holding ? .hidden : .automatic)
+        .task {
+            let ow = openWindow, close = dismissImmersiveSpace
+            AppModel.shared.openMain = { ow(id: "main") }
+            AppModel.shared.closeAction = { await close() }
+            await s.start()
+        }
+        .onDisappear {
+            s.stop()
+            if !AppModel.shared.mainOpen { openWindow(id: "main") }      // 쉬러 가면 메인 창으로
+        }
     }
 }
 
@@ -54,7 +66,24 @@ enum Needs {
     }
 }
 
-/// 강아지 위 상태 카드 (누르면 잠깐 보임) + 짧은 알림
+struct CardButton: View {
+    let icon: String
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon).font(.title3)
+                Text(title).font(.caption2)
+            }
+            .frame(width: 58, height: 46)
+        }
+        .buttonBorderShape(.roundedRectangle(radius: 14))
+    }
+}
+
+/// 강아지 메뉴 카드 (강아지를 바라보고 집으면 뜸): 상태 + 할 일 + 짧은 알림
 struct StatusCard: View {
     let s: PlaySession
 
@@ -66,13 +95,25 @@ struct StatusCard: View {
                     Text(p.name).font(.headline)
                     Text(PetState.ageText(p.age())).font(.subheadline).foregroundStyle(.secondary)
                     if p.asleep { Image(systemName: "zzz").foregroundStyle(.secondary) }
+                    Spacer(minLength: 12)
+                    Label("\(p.points)", systemImage: "p.circle.fill").font(.subheadline)
+                    Button { s.closeCard() } label: { Image(systemName: "xmark") }.buttonBorderShape(.circle).controlSize(.small)
                 }
                 HStack(spacing: 8) {
                     let items = Needs.list(p)
                     ForEach(0..<items.count, id: \.self) { i in NeedRing(icon: items[i].0, value: items[i].1, size: 34) }
                 }
+                // 할 일: 밥·물은 바로, 나머지는 필요할 때만 메인 창을 띄움
+                HStack(spacing: 10) {
+                    CardButton(icon: "fork.knife", title: "밥") { s.feed() }
+                    CardButton(icon: "drop.fill", title: "물") { s.giveWater() }
+                    CardButton(icon: "archivebox.fill", title: "보관함") { AppModel.shared.showMain(tab: 2) }
+                    CardButton(icon: "cart.fill", title: "상점") { AppModel.shared.showMain(tab: 1) }
+                    CardButton(icon: "house.fill", title: "쉬기") { AppModel.shared.rest() }
+                }
             }
             if let t = s.toastText { Text(t).font(.callout) }
+            if s.loading { Button { AppModel.shared.rest() } label: { Label("쉬기", systemImage: "house.fill") }.controlSize(.small) }
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
         .glassBackgroundEffect()

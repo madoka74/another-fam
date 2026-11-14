@@ -37,6 +37,8 @@ final class NavGrid {
     private var byAnchor: [UUID: [Int32]] = [:]
     /// 공간 인식을 못 쓸 때: 시작한 곳 둘레를 빈 바닥으로 봄
     var open = false
+    /// 바닥에 놓인 물건(그릇·계단) — 그 둘레로는 지나가지 않음
+    var extra: [(c: SIMD2<Float>, r: Float)] = []
     var ready: Bool { open || seenCount > 40 }
     private(set) var seenCount = 0
 
@@ -74,7 +76,12 @@ final class NavGrid {
             let dx: Float = p.x - ox, dz: Float = p.y - oz
             return dx * dx + dz * dz < 6.25
         }
-        return seen[c] == 1 && block[c] == 0
+        guard seen[c] == 1 && block[c] == 0 else { return false }
+        if !extra.isEmpty {
+            let p = center(c)
+            for e in extra where simd_distance(p, e.c) < e.r { return false }
+        }
+        return true
     }
 
     /// 몸이 지나갈 수 있는 칸 (둘레 한 칸까지 빔)
@@ -205,6 +212,34 @@ final class NavGrid {
         return pts
     }
 
+    /// p 에 가장 가까운 '둘레 clear 미터가 모두 빈 바닥'인 자리 (물건·강아지를 처음 놓을 곳). 없으면 nil
+    func openSpot(near p: SIMD2<Float>, clear: Float, within: Float = 1.6) -> SIMD2<Float>? {
+        if open { return p }
+        guard let c0 = index(p.x, p.y) else { return nil }
+        let N = NavGrid.n
+        let rc = Int((clear / NavGrid.cell).rounded(.up)), rs = Int(within / NavGrid.cell)
+        let i0 = c0 % N, j0 = c0 / N
+        var best: Int?
+        var bd = Int.max
+        for dj in -rs...rs {
+            for di in -rs...rs {
+                let d = di * di + dj * dj
+                if d >= bd || d > rs * rs { continue }
+                let a = i0 + di, b = j0 + dj
+                if a < rc || b < rc || a >= N - rc || b >= N - rc { continue }
+                var ok = true
+                for v in -rc...rc where ok {
+                    for u in -rc...rc where u * u + v * v <= rc * rc {
+                        if !free((b + v) * N + a + u) { ok = false; break }
+                    }
+                }
+                if ok { bd = d; best = b * N + a }
+            }
+        }
+        guard let best else { return nil }
+        return center(best)
+    }
+
     /// 둘레에서 아무 갈 수 있는 자리 (거닐 때)
     func randomSpot(near p: SIMD2<Float>, rMin: Float, rMax: Float) -> SIMD2<Float>? {
         for _ in 0..<24 {
@@ -227,7 +262,7 @@ final class Room {
     private var sceneP: SceneReconstructionProvider?
     private var ended = false
     private(set) var floorY: Float?
-    private var floorFromPlane = false
+    private(set) var floorFromPlane = false
     private var floorPlanes: [UUID: (y: Float, area: Float)] = [:]
     let nav = NavGrid()
     private(set) var perches: [UUID: Perch] = [:]
@@ -242,7 +277,7 @@ final class Room {
     var occlusion = true { didSet { for e in occluders.values { e.isEnabled = occlusion } } }
     var onAnchor: ((WorldAnchor, Bool) -> Void)?
     private(set) var handsOK = false, sensingOK = false
-    private var startAt: Double = 0
+    private(set) var startAt: Double = 0
 
     /// 시작. 반환: 알릴 말 (없으면 nil)
     func start() async -> String? {
@@ -275,6 +310,7 @@ final class Room {
         }
         guard !providers.isEmpty else { nav.open = true; return "이 기기에서는 공간 인식을 쓸 수 없어요." }
         do { try await ar.run(providers) } catch { nav.open = true; return "공간 인식을 시작하지 못했어요." }
+        startAt = CACurrentMediaTime()          // 허락 창에서 기다린 시간은 빼고 셈
         if let w = world { Task { await self.watchWorld(w) } }
         if let p = planesP { Task { await self.watchPlanes(p) } }
         if let s = sceneP { Task { await self.watchScene(s) } }

@@ -227,6 +227,47 @@ final class Prop {
 
     var pos: SIMD3<Float> { entity.position(relativeTo: nil) }
 
+    /// 물건의 대략적인 상자 (절반 크기). 바닥에 놓는 것은 밑면이 원점
+    private var half: SIMD3<Float> {
+        switch id {
+        case "bowl_food", "bowl_water": return SIMD3<Float>(0.078, 0.022, 0.078)
+        case "blanket": return SIMD3<Float>(0.26, 0.007, 0.21)
+        case "bed": return SIMD3<Float>(0.27, 0.05, 0.27)
+        case "pad": return SIMD3<Float>(0.23, 0.003, 0.17)
+        case "steps": return SIMD3<Float>(0.18, 0.14, 0.25)
+        case "ball": return SIMD3<Float>(0.027, 0.027, 0.027)
+        case "rope": return SIMD3<Float>(0.105, 0.02, 0.02)
+        case "squeak", "chewbone": return SIMD3<Float>(0.06, 0.013, 0.022)
+        case "blanky": return SIMD3<Float>(0.035, 0.10, 0.025)
+        case "bottle": return SIMD3<Float>(0.02, 0.057, 0.02)
+        case "brush": return SIMD3<Float>(0.023, 0.014, 0.085)
+        case "shampoo": return SIMD3<Float>(0.024, 0.06, 0.024)
+        default: return SIMD3<Float>(0.03, 0.008, 0.01)
+        }
+    }
+
+    /// 세계의 한 점에서 물건 겉까지 거리 (집을 때 — 둘레 원이 아니라 실제 모양 기준)
+    func grabDist(_ w: SIMD3<Float>) -> Float {
+        var l = entity.convert(position: w, from: nil)
+        let h = half
+        if kind == .fixed || kind == .mess { l.y -= h.y }
+        let d: SIMD3<Float> = simd_max(simd_abs(l) - h, SIMD3<Float>(repeating: 0))
+        return simd_length(d)
+    }
+
+    /// 이 물건 위에 올라선 자리의 높이 (물건 밑면에서). 올라서는 물건(담요·방석·패드)이 아니거나 밖이면 nil
+    func top(at w: SIMD3<Float>) -> Float? {
+        let l = entity.convert(position: w, from: nil)
+        switch id {
+        case "blanket": return abs(l.x) < 0.26 && abs(l.z) < 0.21 ? 0.011 : nil       // 살짝 눌림
+        case "pad": return abs(l.x) < 0.23 && abs(l.z) < 0.17 ? 0.005 : nil
+        case "bed":
+            let r = (l.x * l.x + l.z * l.z).squareRoot()
+            return r < 0.20 ? 0.045 : (r < 0.27 ? 0.075 : nil)
+        default: return nil
+        }
+    }
+
     func setMode(_ m: PhysicsBodyMode) {
         guard var b = entity.components[PhysicsBodyComponent.self] else { return }
         if b.mode != m { b.mode = m; entity.components.set(b) }

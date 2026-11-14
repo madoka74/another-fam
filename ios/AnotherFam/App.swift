@@ -35,6 +35,10 @@ final class AppModel {
     var pet: PetState? = Store.load()
     var playOpen = false
     var notice: String?
+    var tab = 0                          // 메인 창 탭 (0 홈, 1 상점, 2 보관함, 3 설정)
+    @ObservationIgnored var mainOpen = false
+    @ObservationIgnored var openMain: (@MainActor () -> Void)?
+    @ObservationIgnored var closeMain: (@MainActor () -> Void)?
     @ObservationIgnored weak var session: PlaySession?
     @ObservationIgnored var openAction: (@MainActor () async -> Bool)?
     @ObservationIgnored var closeAction: (@MainActor () async -> Void)?
@@ -126,6 +130,7 @@ final class AppModel {
             let ok = await openAction?() ?? false
             playOpen = ok
             busy = false
+            if ok { closeMain?() }          // 강아지에게 집중: 메인 창은 닫아 둠 (강아지를 누르면 메뉴)
             if !ok { notice = "공간을 열지 못했어요. 다른 앱의 몰입 화면을 닫고 다시 해 주세요." }
         }
     }
@@ -138,4 +143,11 @@ final class AppModel {
     }
 
     func playClosed() { playOpen = false }
+
+    /// 메인 창을 그 탭으로 (닫혀 있으면 엶) — 함께하는 동안 메인 창은 필요할 때만 뜸
+    func showMain(tab t: Int, note: String? = nil) {
+        tab = t
+        if let note { notice = note }
+        if !mainOpen { openMain?() }
+    }
 }
