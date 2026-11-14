@@ -85,6 +85,22 @@ def main():
     m = Image.new('L', (W, W), 0); ImageDraw.Draw(m).ellipse([0, 0, W, W], fill=255)
     out = Image.new('RGBA', (W, W), (255, 255, 255, 0)); out.paste(prev, (0, 0), m)
     out.resize((512, 512), Image.LANCZOS).save(os.path.join(ROOT, 'tools', 'icon_preview.png'))
+    # 아이폰 짝 앱 아이콘: 같은 강아지 얼굴(패밀리룩) + 오른쪽 위 작은 금빛 종 (알림 앱). 네모 그대로·투명 없음
+    ph = prev.copy()
+    bd = ImageDraw.Draw(ph)
+    bx, by, br = W * .80, W * .20, W * .085
+    gold, dark = (240, 196, 92, 255), (176, 128, 44, 255)
+    bd.ellipse([bx - br * .22, by - br * 1.08, bx + br * .22, by - br * .64], fill=gold)
+    bd.pieslice([bx - br * .82, by - br * .9, bx + br * .82, by + br * .9], 180, 360, fill=gold)
+    bd.rectangle([bx - br * .82, by - br * .02, bx + br * .82, by + br * .62], fill=gold)
+    bd.polygon([(bx - br * .82, by + br * .5), (bx - br * 1.08, by + br * .82), (bx + br * 1.08, by + br * .82), (bx + br * .82, by + br * .5)], fill=gold)
+    bd.ellipse([bx - br * .26, by + br * .78, bx + br * .26, by + br * 1.18], fill=dark)
+    pd = os.path.join(ROOT, 'ios', 'FamPhone', 'Assets.xcassets', 'AppIcon.appiconset')
+    os.makedirs(pd, exist_ok=True)
+    ph.convert('RGB').resize((S, S), Image.LANCZOS).save(os.path.join(pd, 'icon.png'))
+    json.dump({"images": [{"filename": "icon.png", "idiom": "universal", "platform": "ios", "size": "1024x1024"}], "info": {"author": "xcode", "version": 1}}, open(os.path.join(pd, 'Contents.json'), 'w'), indent=2)
+    json.dump({"info": {"author": "xcode", "version": 1}}, open(os.path.join(os.path.dirname(pd), 'Contents.json'), 'w'), indent=2)
+    ph.convert('RGB').resize((512, 512), Image.LANCZOS).save(os.path.join(ROOT, 'tools', 'icon_phone_preview.png'))
 
 
 main()

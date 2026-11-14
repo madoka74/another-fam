@@ -215,7 +215,26 @@ struct PetState: Codable, Equatable {
     }
 }
 
-/// 저장: 앱 지원 폴더의 pet.json (업데이트해도 그대로 — 항목이 늘어도 예전 파일을 읽음)
+/// 아이클라우드 키-값 저장소의 강아지 (0.3.0): 비전 앱이 저장할 때마다 올리고, 아이폰 앱이 읽어 알림을 계산함.
+/// 두 앱이 같은 번들 ID 라 같은 저장소를 씀. 앱을 지웠다 다시 깔면 여기서 되살림
+enum CloudPet {
+    static let key = "pet.v1"
+
+    static func push(_ d: Foundation.Data) {
+        NSUbiquitousKeyValueStore.default.set(d, forKey: key)
+    }
+
+    static func pull() -> PetState? {
+        guard let d = NSUbiquitousKeyValueStore.default.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(PetState.self, from: d)
+    }
+
+    static func remove() {
+        NSUbiquitousKeyValueStore.default.removeObject(forKey: key)
+    }
+}
+
+/// 저장: 앱 지원 폴더의 pet.json (업데이트해도 그대로 — 항목이 늘어도 예전 파일을 읽음) + 아이클라우드
 enum Store {
     private static var dir: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("anotherfam", isDirectory: true)
@@ -228,6 +247,12 @@ enum Store {
         for name in ["pet.json", "pet.bak.json"] {
             if let d = try? Foundation.Data(contentsOf: dir.appendingPathComponent(name)), let p = try? JSONDecoder().decode(PetState.self, from: d) { return p }
         }
+        // 기기에 없으면(다시 설치) 아이클라우드에서
+        NSUbiquitousKeyValueStore.default.synchronize()
+        if let p = CloudPet.pull() {
+            if let d = try? JSONEncoder().encode(p) { try? d.write(to: file, options: .atomic) }
+            return p
+        }
         return nil
     }
 
@@ -238,11 +263,13 @@ enum Store {
             try? FileManager.default.copyItem(at: file, to: dir.appendingPathComponent("pet.bak.json"))
         }
         try? d.write(to: file, options: .atomic)
+        CloudPet.push(d)
     }
 
     static func clear() {
         try? FileManager.default.removeItem(at: file)
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("pet.bak.json"))
+        CloudPet.remove()
     }
 }
 
