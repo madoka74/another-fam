@@ -812,7 +812,7 @@ final class Dog {
             }
         case 1:
             if now < until || anim.busy { return }
-            let poses = baby ? ["nb_sleep"] : (stage == .senior ? ["sleep_side", "sleep_rest"] : ["sleep_curl", "sleep_side", "sleep_rest", "sleep_belly"])
+            let poses = baby ? ["nb_sleep"] : (stage == .senior ? ["sleep_side", "sleep_rest"] : (age > 180 && pet.bond > 0.5 ? ["sleep_curl", "sleep_side", "sleep_rest", "sleep_belly"] : ["sleep_curl", "sleep_side", "sleep_rest"]))
             let name = poses.randomElement() ?? "sleep_curl"
             let via = name == "sleep_side" ? "side" : (name == "sleep_curl" ? "curl" : (name == "sleep_belly" ? "belly" : "rest"))
             if baby { anim.hold("nb_sleep") } else { anim.setPosture(via); sleepPose = name }
@@ -911,7 +911,8 @@ final class Dog {
         case 0:
             // 패드를 아는 만큼(배변 훈련) 패드로, 아니면 가까운 구석으로
             let pad = s.prop("pad")
-            if let pad, Float.random(in: 0...1) < 0.25 + 0.75 * pet.train || age > 400 {
+            // 패드 냄새에 끌려 대부분 패드로 (0.9.0 은 훈련 전 강아지가 75% 다른 곳에 싸서 패드를 깔아도 안 쓰는 것처럼 보였음)
+            if let pad, Float.random(in: 0...1) < 0.8 + 0.2 * pet.train || age > 400 {
                 spot = SIMD2<Float>(pad.pos.x, pad.pos.z); target = pad
             } else {
                 target = nil

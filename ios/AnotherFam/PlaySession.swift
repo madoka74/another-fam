@@ -382,7 +382,8 @@ final class PlaySession {
         }
         settleFixed()
         loading = false
-        toastText = nil
+        // 어느 길로 놓였는지 알림 (자리 문제 원인 확인용)
+        toast(homeNew ? "새 자리에 놓았어요" : "지난 자리 그대로예요")
         saveLayout()
     }
 
