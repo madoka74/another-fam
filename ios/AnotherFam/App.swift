@@ -80,6 +80,18 @@ final class AppModel {
         Store.save(p)
     }
 
+    /// 시험: '함께한 날'을 정함 (입양한 때를 그만큼 앞당김). 그 뒤로는 그 나이에서 시간이 그대로 흐름
+    func setTogetherDays(_ days: Double) {
+        let d = min(Sim.maxAge / Sim.ageRate, max(0, days))
+        mutate { p in
+            let now = Date().timeIntervalSince1970
+            p.born = now - d * 86400
+            p.lastSim = now                  // 건너뛴 날 동안 배고파지지 않게 (나이만 바꿈)
+            p.asleep = false
+        }
+        session?.dog?.ageChanged()
+    }
+
     func reset() {
         guard session == nil else { return }
         Store.clear()

@@ -28,7 +28,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "7"
         SWIFT_VERSION: "5.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MARKETING_VERSION: "0.3.0"
+        MARKETING_VERSION: "0.3.1"
         CURRENT_PROJECT_VERSION: "1"
     # 아이클라우드 키-값 저장소: 아이폰 앱과 강아지 상태를 나눔 + 다시 설치해도 되살림 (App ID 에 iCloud 를 켜 둬야 함)
     entitlements:
@@ -66,7 +66,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MARKETING_VERSION: "0.3.0"
+        MARKETING_VERSION: "0.3.1"
         CURRENT_PROJECT_VERSION: "1"
     entitlements:
       path: FamPhone/FamPhone.entitlements

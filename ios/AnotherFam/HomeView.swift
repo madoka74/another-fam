@@ -234,6 +234,8 @@ struct StorageTab: View {
 struct SettingsTab: View {
     @State private var volume: Double = UserDefaults.standard.object(forKey: "af.volume") as? Double ?? 0
     @State private var askReset = false
+    @State private var days: Double = 0
+    @FocusState private var typing: Bool
     private var model: AppModel { AppModel.shared }
 
     var body: some View {
@@ -251,6 +253,22 @@ struct SettingsTab: View {
                     UserDefaults.standard.set(x, forKey: "af.volume")
                 }
             }
+            Section("시험") {
+                HStack(spacing: 12) {
+                    Text("함께한 날")
+                    TextField("일", value: $days, format: .number.precision(.fractionLength(0...1)))
+                        .keyboardType(.decimalPad)
+                        .focused($typing)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 110)
+                    Text("일 → \(PetState.ageText(min(Sim.maxAge, max(0, days) * Sim.ageRate)))").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("적용") {
+                        typing = false
+                        model.setTogetherDays(days)
+                    }
+                }
+            }
             Section("가족") {
                 Button("처음부터 다시", role: .destructive) { askReset = true }
                     .disabled(model.playOpen)
@@ -260,7 +278,10 @@ struct SettingsTab: View {
                 LabeledContent("만든 곳", value: "Blankish works")
             }
         }
-        .onAppear { SoundBank.shared.master = volume }
+        .onAppear {
+            SoundBank.shared.master = volume
+            if let p = model.pet { days = ((Date().timeIntervalSince1970 - p.born) / 86400 * 10).rounded() / 10 }
+        }
         .confirmationDialog("지금 가족과 헤어지고 처음부터 다시 시작할까요?", isPresented: $askReset, titleVisibility: .visible) {
             Button("헤어지기", role: .destructive) { model.reset() }
             Button("취소", role: .cancel) {}

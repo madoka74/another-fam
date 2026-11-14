@@ -246,6 +246,18 @@ final class Dog {
         else { begin(.idle, for: 0.5) }
     }
 
+    /// 시험용으로 나이를 바꿨을 때: 하던 일을 그만두고 그 나이의 기본 자세에서 다시 시작
+    func ageChanged() {
+        anim.age = pet.age(Date().timeIntervalSince1970)        // 자세 고르기 전에 새 나이로 (standName 이 나이를 봄)
+        dropCarry()
+        onPerch = nil
+        nursing = false
+        anim.stop()
+        anim.overlay(nil)
+        anim.setPosture(standName)
+        begin(.idle, for: 1)
+    }
+
     func heard(_ loud: Bool) {
         // 손뼉: 자고 있으면 깸, 깨어 있으면 쳐다보고 옴
         if baby { return }
