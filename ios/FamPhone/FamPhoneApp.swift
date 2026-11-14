@@ -45,6 +45,20 @@ final class PhoneModel {
     }
     @ObservationIgnored private var observer: NSObjectProtocol?
 
+    /// 지금 하고 있는 일 (비전 앱이 켜져 있지 않은 동안은 흘러간 시간으로 미루어 봄)
+    var doing: Doing {
+        guard let p = pet else { return .calm }
+        if Date().timeIntervalSince1970 - seenAt < 45 { return .together }
+        if p.asleep { return .sleeping }
+        let grown = p.age() >= 21
+        if p.food < 0.25 { return .hungry }
+        if grown && p.water < 0.25 { return .thirsty }
+        if p.potty < 0.2 { return .potty }
+        if p.love < 0.25 { return .lonely }
+        if grown && p.fun < 0.25 { return .bored }
+        return p.mood > 0.7 ? .happy : .calm
+    }
+
     init() {
         observer = NotificationCenter.default.addObserver(forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
                                                           object: NSUbiquitousKeyValueStore.default, queue: .main) { _ in
@@ -201,113 +215,34 @@ enum Forecast {
     }
 }
 
-// MARK: - 화면
-struct PhoneView: View {
-    private var m: PhoneModel { PhoneModel.shared }
+enum Doing: Equatable {
+    case together, sleeping, hungry, thirsty, potty, lonely, bored, happy, calm
 
-    var body: some View {
-        NavigationStack {
-            List {
-                if let p = m.pet {
-                    Section {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(p.name).font(.largeTitle.bold())
-                            HStack(spacing: 8) {
-                                Text(PetState.ageText(p.age()))
-                                Text(p.stage.title).padding(.horizontal, 8).padding(.vertical, 2).background(.quaternary, in: Capsule())
-                                if p.asleep { Label("자는 중", systemImage: "zzz") }
-                            }
-                            .font(.subheadline).foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 6)
-                        let items = needs(p)
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 14) {
-                            ForEach(0..<items.count, id: \.self) { i in
-                                VStack(spacing: 4) {
-                                    Ring(icon: items[i].1, value: items[i].2)
-                                    Text(items[i].0).font(.caption2).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .padding(.vertical, 8)
-                        LabeledContent("비전 프로 소식", value: ago(m.seenAt))
-                    }
-                    Section("다음 알림") {
-                        if m.allowed == false {
-                            Button("알림 허용하기") { m.askPermission() }
-                        }
-                        if m.upcoming.isEmpty {
-                            Text("당분간 없어요").foregroundStyle(.secondary)
-                        }
-                        ForEach(m.upcoming) { a in
-                            LabeledContent(a.text, value: when(a.at))
-                        }
-                        Toggle("밤(23~7시)에도 알림", isOn: Binding(get: { m.night }, set: { m.night = $0 }))
-                    }
-                } else {
-                    Section {
-                        VStack(spacing: 12) {
-                            Image(systemName: "dog.fill").font(.system(size: 48)).foregroundStyle(.secondary)
-                            Text("비전 프로에서 가족을 맞이하면\n여기서 소식을 받아요").multilineTextAlignment(.center).foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity).padding(.vertical, 30)
-                    }
-                }
-                Section {
-                    let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-                    let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-                    LabeledContent("버전", value: "\(v) (\(b))")
-                }
-            }
-            .navigationTitle("어나더 팸")
-            .navigationBarTitleDisplayMode(.inline)
-            .refreshable { await m.update() }
+    func text(baby: Bool) -> String {
+        switch self {
+        case .together: return "지금 함께 있어요"
+        case .sleeping: return "자는 중"
+        case .hungry: return baby ? "젖을 찾아요" : "배고파해요"
+        case .thirsty: return "목말라해요"
+        case .potty: return "화장실이 급해요"
+        case .lonely: return "보고 싶어 해요"
+        case .bored: return "심심해해요"
+        case .happy: return "기분이 좋아요"
+        case .calm: return "편히 쉬고 있어요"
         }
-        .task { await m.update() }
     }
 
-    private func needs(_ p: PetState) -> [(String, String, Float)] {
-        var out: [(String, String, Float)] = [("밥", "fork.knife", p.food)]
-        if p.age() >= 21 { out.append(("물", "drop.fill", p.water)) }
-        out.append(("잠", "moon.zzz.fill", p.energy))
-        out.append(("배변", "toilet.fill", p.potty))
-        if p.age() >= 21 { out.append(("놀이", "tennisball.fill", p.fun)) }
-        out.append(("사랑", "heart.fill", p.love))
-        out.append(("청결", "sparkles", p.clean))
-        out.append(("건강", "cross.case.fill", p.health))
-        return out
-    }
-
-    private func ago(_ t: Double) -> String {
-        let s = Date().timeIntervalSince1970 - t
-        if s < 90 { return "방금" }
-        if s < 3600 { return "\(Int(s / 60))분 전" }
-        if s < 86400 { return "\(Int(s / 3600))시간 전" }
-        return "\(Int(s / 86400))일 전"
-    }
-
-    private func when(_ t: Double) -> String {
-        let d = Date(timeIntervalSince1970: t)
-        if t - Date().timeIntervalSince1970 < 60 { return "곧" }
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = Calendar.current.isDateInToday(d) ? "a h:mm" : "M/d a h:mm"
-        return f.string(from: d)
-    }
-}
-
-struct Ring: View {
-    let icon: String
-    let value: Float
-
-    var body: some View {
-        let v = CGFloat(min(1, max(0, value)))
-        let col: Color = value < 0.25 ? .red : (value < 0.5 ? .orange : .green)
-        ZStack {
-            Circle().stroke(.quaternary, lineWidth: 5)
-            Circle().trim(from: 0, to: v).stroke(col, style: StrokeStyle(lineWidth: 5, lineCap: .round)).rotationEffect(.degrees(-90))
-            Image(systemName: icon).font(.system(size: 17))
+    var icon: String {
+        switch self {
+        case .together: return "visionpro"
+        case .sleeping: return "zzz"
+        case .hungry: return "fork.knife"
+        case .thirsty: return "drop.fill"
+        case .potty: return "toilet.fill"
+        case .lonely: return "heart.fill"
+        case .bored: return "tennisball.fill"
+        case .happy: return "face.smiling"
+        case .calm: return "leaf.fill"
         }
-        .frame(width: 50, height: 50)
     }
 }
