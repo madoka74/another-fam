@@ -8,6 +8,7 @@ import BackgroundTasks
 @main
 struct FamPhoneApp: App {
     @Environment(\.scenePhase) private var phase
+    @UIApplicationDelegateAdaptor(PhoneDelegate.self) private var delegate
 
     var body: some SwiftUI.Scene {
         WindowGroup {
@@ -24,6 +25,22 @@ struct FamPhoneApp: App {
     }
 }
 
+/// 클라우드킷 조용한 푸시: 비전 앱이 상태를 올리면 iOS 가 이 앱을 백그라운드에서 깨움 → 새 상태로 알림을 다시 맞춤 (0.8.0)
+final class PhoneDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        application.registerForRemoteNotifications()
+        Task { await CloudSync.subscribe() }
+        return true
+    }
+
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
+        guard let d = await CloudSync.pull() else { return .failed }
+        await MainActor.run { PhoneModel.cloudData = d }
+        await PhoneModel.shared.update()
+        return .newData
+    }
+}
+
 struct PlannedAlert: Identifiable {
     let kind: String
     let at: Double
@@ -35,6 +52,11 @@ struct PlannedAlert: Identifiable {
 final class PhoneModel {
     static let shared = PhoneModel()
     static let refreshID = "com.blankishworks.another-fam.refresh"
+    /// 클라우드킷으로 받은 마지막 상태 (키-값 저장소보다 먼저 도착할 수 있음 — 둘 중 더 새것을 씀)
+    static var cloudData: Foundation.Data? {
+        get { UserDefaults.standard.data(forKey: "af.ckpet") }
+        set { UserDefaults.standard.set(newValue, forKey: "af.ckpet") }
+    }
 
     var pet: PetState?                  // 지금 시각까지 따라잡은 상태
     var seenAt: Double = 0              // 비전 앱이 마지막으로 저장한 때
@@ -101,7 +123,11 @@ final class PhoneModel {
         }
         allowed = st.authorizationStatus == .authorized || st.authorizationStatus == .provisional
         center.removePendingNotificationRequests(withIdentifiers: Forecast.kinds.map { "af." + $0 })
-        guard let saved = CloudPet.pull() else {
+        if let d = await CloudSync.pull() { PhoneModel.cloudData = d }      // 켤 때·깨어날 때 클라우드킷에서도 한 번
+        let kv = CloudPet.pull()
+        let ck = PhoneModel.cloudData.flatMap { try? JSONDecoder().decode(PetState.self, from: $0) }
+        let fresh = [kv, ck].compactMap { $0 }.max { $0.lastSim < $1.lastSim }
+        guard let saved = fresh else {
             pet = nil
             upcoming = []
             return

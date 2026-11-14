@@ -112,8 +112,12 @@ final class Dog {
     }
 
     // MARK: 소리
-    func say(_ base: String, gain: Double = -8, head: String? = nil) {
-        let sp = pitch
+    func say(_ base0: String, gain g0: Double = -8, head: String? = nil) {
+        // 합성한 긴 울음(낑낑·하울·가는 소리)은 사이렌·고주파처럼 들려 실제 녹음으로 바꾸기 전까지 쓰지 않음 → 짧은 숨소리로
+        var base = base0, gain = g0
+        if base == "whine" || base == "whimper" || base == "howl" { base = "sigh"; gain -= 4 }
+        // 높이: 강아지일수록 높되 1.25배까지 (0.7.0 은 갓난 1.75배로 고주파처럼 들렸음)
+        let sp = min(1.25, pitch)
         if let name = SoundBank.shared.play(base, on: mouth, gain: gain, speed: sp) {
             anim.speak(SoundBank.shared.envelope(name), rate: Float(sp))
         }
@@ -772,11 +776,11 @@ final class Dog {
         case 17: if anim.posture == "stand" { anim.play("look_back", then: "stand") }
         case 18: anim.overlay("sneeze")
         case 19: if anim.posture == "sit" { anim.play("shake_sit", then: "sit") } else { anim.overlay("shake_head"); fx("shake", gain: -24) }
-        case 20: if anim.posture == "sit" || anim.posture == "stand" { anim.setPosture("sit"); anim.hold("hind_paw"); until = s.now + 2.5; holdStopAt = s.now + 2.4; fx("scratch", gain: -22) }
+        case 20: if anim.posture == "sit" { anim.play(Bool.random() ? "scratch_l" : "scratch_r", then: "sit") } else { anim.overlay("ear_perk") }
         case 21: if stage != .senior { anim.setPosture("side"); anim.play("side_stretch", then: "side"); until = s.now + 5 }
         case 22: anim.overlay("look_down")
         case 23: if p.energy < 0.5 { anim.overlay("sleepy") } else { anim.overlay("tilt_l") }
-        case 24: if stage.rawValue >= Stage.adolescent.rawValue && Float.random(in: 0...1) < 0.25 { anim.overlay("howl"); say("howl", gain: -14) } else { anim.overlay("sniff_air"); fx("sniff", gain: -22) }
+        case 24: anim.overlay("sniff_air"); fx("sniff", gain: -22)
         case 25: if anim.posture == "stand" { anim.play("shake") } else { anim.overlay("ear_back") }
         case 26: if young && anim.posture == "stand" { anim.play("pounce", then: "stand"); say("yip", gain: -16) }
         case 27: anim.overlay("nod")
@@ -906,7 +910,9 @@ final class Dog {
                 spot = SIMD2<Float>(pad.pos.x, pad.pos.z); target = pad
             } else {
                 target = nil
-                spot = s.room.nav.randomSpot(near: xz, rMin: 0.4, rMax: 1.6) ?? xz
+                // 위가 트인 빈 바닥 (가구 밑에 싸서 보이지 않았음)
+                let r = s.room.nav.randomSpot(near: xz, rMin: 0.4, rMax: 1.6) ?? xz
+                spot = s.clearSpot(near: r, half: 0.08, within: 0.8) ?? r
             }
             phase = 1
         case 1:

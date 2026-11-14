@@ -70,7 +70,7 @@ final class AppModel {
     }
 
     func sleep() {
-        if let s = session { Store.save(s.pet) } else if let p = pet { Store.save(p) }
+        if let s = session { Store.save(s.pet, force: true) } else if let p = pet { Store.save(p, force: true) }
     }
 
     func adopt(name: String, male: Bool) {

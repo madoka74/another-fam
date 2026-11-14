@@ -116,7 +116,12 @@ struct StatusCard: View {
                 }
             }
             if let t = s.toastText { Text(t).font(.title3) }
-            if s.loading { Button { AppModel.shared.rest() } label: { Label("쉬기", systemImage: "house.fill") } }
+            if s.loading {
+                HStack(spacing: 12) {
+                    if s.canRehome { Button { s.rehome() } label: { Label("여기에 새로 자리 잡기", systemImage: "mappin.and.ellipse") } }
+                    Button { AppModel.shared.rest() } label: { Label("쉬기", systemImage: "house.fill") }
+                }
+            }
         }
         .fixedSize()
         .padding(.horizontal, 24).padding(.vertical, 20)

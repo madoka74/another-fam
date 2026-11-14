@@ -259,7 +259,7 @@ enum Store {
         return nil
     }
 
-    static func save(_ p: PetState) {
+    static func save(_ p: PetState, force: Bool = false) {
         guard let d = try? JSONEncoder().encode(p) else { return }
         if FileManager.default.fileExists(atPath: file.path) {
             try? FileManager.default.removeItem(at: dir.appendingPathComponent("pet.bak.json"))
@@ -267,6 +267,7 @@ enum Store {
         }
         try? d.write(to: file, options: .atomic)
         CloudPet.push(d)
+        CloudSync.push(p, data: d, force: force)           // 아이폰 앱을 바로 깨워 알림을 다시 맞추게 (Cloud.swift)
     }
 
     static func clear() {

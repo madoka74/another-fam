@@ -131,7 +131,16 @@ final class DogData: @unchecked Sendable {
         self.bi = bi; self.bw = bw; self.idx = idx; self.parent = parent; self.rest = rest; self.group = group
         self.eye = eye; self.eyeR = eyeR; self.nose = nose; self.noseS = noseS; self.pawFront = pawFront; self.pawHind = pawHind; self.hipY = hipY
         self.stride = stride; self.frames = frames; self.clips = clips
+        // 땅 맞춤용 겉면 점 (약 400개, 고르게)
+        var g: [Int] = []
+        let step = max(1, nv / 400)
+        var v = 0
+        while v < nv { g.append(v); v += step }
+        self.ground = g
     }
+
+    /// 땅에 닿는지 볼 겉면 점들
+    let ground: [Int]
 
     private static func v3(_ a: Any?) -> SIMD3<Float> {
         guard let l = a as? [Any], l.count >= 3 else { return .zero }
@@ -260,8 +269,18 @@ final class DogData: @unchecked Sendable {
             let pw: SIMD3<Float> = (k < 2 ? pawFront : pawHind) * S[i]
             lo = min(lo, (T[i] + R[i] * pw).y)
         }
-        let belly: Float = 0.05 * S[J.root].y
-        lo = min(lo, T[J.root].y - belly, T[J.spine].y - belly, T[J.chest].y - belly * 1.08)
+        // 몸 겉면 점들을 실제로 옮겨 가장 낮은 곳 (0.7.0 까지는 몸통 뼈 아래 5cm 로 어림해서, 배를 보이고 눕거나
+        // 옆으로 누우면 등·머리가 바닥 속으로 최대 9cm 파묻혔음 — 머리는 아예 셈에 없었음)
+        for v in ground {
+            var y: Float = 0
+            for k in 0..<4 {
+                let w = bw[v * 4 + k]
+                if w <= 0 { continue }
+                let b = Int(bi[v * 4 + k])
+                y += w * (T[b] + R[b] * ((pos[v] - rest[b]) * S[b])).y
+            }
+            lo = min(lo, y)
+        }
         return lo
     }
 }

@@ -131,7 +131,12 @@ final class DogAnimator {
         oneShot = true
         after = then
         start(c, fade: f)
+        once = true
     }
+
+    /// play 로 튼 동작은 되풀이 동작이어도 한 바퀴만 (0.7.0: 땅 파기·냄새 맡기·제자리 돌기 등 되풀이 동작을 play 로 틀면 끝나지 않아
+    /// '자는 중'인데 계속 바닥을 긁는 소리를 내며 멈춰 있었음). 붙들어 두는 것은 hold
+    private var once = false
 
     /// 되풀이 동작을 자세처럼 유지 (먹기·핥기 등). stop 으로 끝냄
     func hold(_ name: String) {
@@ -141,6 +146,7 @@ final class DogAnimator {
         oneShot = true
         after = nil
         start(c, fade: 0.3)
+        once = false
     }
 
     func stop() {
@@ -179,8 +185,9 @@ final class DogAnimator {
         let t0 = curT
         curT += d
         fire(cur, t0, curT)
-        if cur.loop { if curT >= cur.dur { curT -= cur.dur } }
+        if cur.loop && !(once && oneShot) { if curT >= cur.dur { curT -= cur.dur } }
         else if curT >= cur.dur {
+            once = false
             curT = cur.dur
             if !queue.isEmpty || cur.tag == "trans" { next() }
             else if oneShot {

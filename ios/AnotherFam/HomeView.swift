@@ -117,7 +117,8 @@ struct HomeTab: View {
     var body: some View {
         if let p = model.pet {
             let age = p.age()
-            let days = Int((Date().timeIntervalSince1970 - p.born) / 86400) + 1
+            // 설정의 '함께한 날'과 같은 셈 (지난 날수, 소수 한 자리) — 0.7.0 은 '+1일째'로 세어 1일이 2일로 보였음
+            let days = ((Date().timeIntervalSince1970 - p.born) / 86400).formatted(.number.precision(.fractionLength(0...1)))
             VStack(spacing: 24) {
                 HStack(alignment: .firstTextBaseline, spacing: 14) {
                     Text(p.name).font(.extraLargeTitle)
