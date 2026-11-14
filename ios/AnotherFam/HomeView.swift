@@ -243,6 +243,7 @@ struct SettingsTab: View {
     @State private var volume: Double = UserDefaults.standard.object(forKey: "af.volume") as? Double ?? 0
     @State private var askReset = false
     @State private var entry = ""
+    @State private var voice = VoiceEar.enabled
     private var model: AppModel { AppModel.shared }
 
     var body: some View {
@@ -287,6 +288,19 @@ struct SettingsTab: View {
                     }
                 }
                 .padding(.vertical, 8)
+            }
+            // 말로 부르기·시키기: 간식으로 재주를 가르치며 말하면 그 말을 배움 (사람마다 다른 말도 각각)
+            Section("목소리") {
+                Toggle("말 알아듣기", isOn: Binding(get: { voice }, set: { voice = $0; VoiceEar.enabled = $0 }))
+                if let p = model.pet, !p.words.isEmpty {
+                    let list = p.words.compactMap { w, m -> (String, String, Float)? in
+                        guard let b = m.max(by: { $0.value < $1.value }), b.value >= 0.2 else { return nil }
+                        return (w, Dog.trickTitle(b.key), b.value)
+                    }.sorted { $0.2 > $1.2 }
+                    ForEach(list.prefix(12), id: \.0) { it in
+                        LabeledContent("'\(it.0)' → \(it.1)", value: "\(Int(it.2 * 100))%")
+                    }
+                }
             }
             Section("가족") {
                 Button("처음부터 다시", role: .destructive) { askReset = true }

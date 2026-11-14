@@ -589,6 +589,17 @@ final class Dog {
             if r == 1 { begin(.ask, for: 6); anim.setPosture(baby ? "newborn" : "sit") }
             else if r == -1 { begin(.idle, for: 2); whine() }
         case .ask:
+            if phase >= 20 {
+                // 말로 시킨 재주: 사람을 보며 자세를 잡고, 이어 할 동작(굴러·손)이 있으면 함
+                _ = face(s.userPos, dt, rate: 4)
+                if let k = pendingTrick, anim.settled {
+                    pendingTrick = nil
+                    if k == "roll" { anim.play("roll_over", then: "down"); rolledAt = now + 1.6 }
+                    if k == "paw" { anim.play(Bool.random() ? "paw_l" : "paw_r", then: "sit"); pawAt = now }
+                }
+                if now > until { begin(.idle, for: 1) }
+                return
+            }
             if phase >= 10 {
                 // 손에 든 장난감을 보며 던져 달라고 조름
                 guard let t = target, t.heldBy != nil else { anim.stop(); begin(.idle, for: 1); return }
@@ -1174,6 +1185,7 @@ final class Dog {
                 phase = 2; until = s.now + 3
                 if anim.posture == "sit" && pet.bond > 0.35 && stage.rawValue >= Stage.juvenile.rawValue && Float.random(in: 0...1) < 0.4 {
                     anim.play(Bool.random() ? "paw_l" : "paw_r", then: "sit")             // 내민 손에 앞발을 올림
+                    pawAt = s.now
                 } else if pet.bond > 0.15 { anim.overlay("lick", hold: true); fx("lick", gain: -18) } else { anim.overlay("nuzzle") }
                 if Float.random(in: 0...1) < 0.4 { fx("sniff", gain: -20) }
             }
@@ -1223,6 +1235,14 @@ final class Dog {
             eatTreat(t, learned: lureT > 0.8 ? lureKind : nil)
             return
         }
+        // 엎드린 채 간식을 어깨 옆으로 돌리면 굴러 (엎드려를 조금 익힌 뒤)
+        if anim.posture == "down" && h < 0.14 && l < 0.4 {
+            let lx = simd_dot(d, SIMD2<Float>(cos(yaw), -sin(yaw)))
+            if abs(lx) > 0.08 * g + 0.05 {
+                if !anim.busy && s.now > rolledAt + 1 && (pet.tricks["down"] ?? 0) > 0.25 { anim.play("roll_over", then: "down"); rolledAt = s.now + 1.6 }
+                return
+            }
+        }
         if want.isEmpty { lureT = 0; return }
         if want != lureKind { lureKind = want; lureT = 0 }
         let skill = pet.tricks[want] ?? 0
@@ -1234,17 +1254,19 @@ final class Dog {
         if anim.posture == want && anim.settled { lureT += dt }
     }
 
-    private func eatTreat(_ t: Prop, learned: String?) {
+    private func eatTreat(_ t: Prop, learned lured: String?) {
         var p = pet
+        // 방금 한 재주에 대한 상: 굴러·손(앞발)·말로 시킨 재주·간식으로 이끈 자세 차례로
+        var learned = lured
+        if s.now - rolledAt < 5 { learned = "roll" }
+        else if learned == nil && s.now - pawAt < 8 { learned = "paw" }
+        else if learned == nil && s.now - commandAt < 8 && !commandTrick.isEmpty { learned = commandTrick }
+        if let k = learned, !k.isEmpty { associate(k, &p) }
+        commandAt = -99; pawAt = -99; rolledAt = -99
         p.food = min(1, p.food + 0.04)
         p.fun = min(1, p.fun + 0.05)
         p.bond = min(1, p.bond + 0.006)
         if t.id == "dental" { p.clean = min(1, p.clean + 0.05) }
-        if let k = learned, !k.isEmpty {
-            let v = min(1, (p.tricks[k] ?? 0) + 0.12)
-            p.tricks[k] = v
-            if v >= 1 { s.toast("'\(Dog.trickTitle(k))'를 익혔어요") }
-        }
         pet = p
         s.removeProp(t)
         target = nil
@@ -1255,12 +1277,80 @@ final class Dog {
         lureT = 0
     }
 
-    static func trickTitle(_ k: String) -> String {
+    // MARK: 말 알아듣기
+    private var heardWords: [(String, Double)] = []
+    private var pendingTrick: String?
+    private var commandAt: Double = -99, pawAt: Double = -99, rolledAt: Double = -99
+    private var commandTrick = ""
+
+    /// 사람이 한 낱말. 이름이면 돌아보고 오고, 배운 말이면 익힌 만큼 그 재주를 함 (모르면 고개만 갸웃)
+    func hear(_ w: String) {
+        let now = s.now
+        heardWords.append((w, now))
+        heardWords.removeAll { now - $0.1 > 6 }
+        let name = pet.name.lowercased().replacingOccurrences(of: " ", with: "")
+        if name.count >= 2 && w.contains(name) {
+            if act == .sleep || act == .held || act == .eat || act == .nurse { if act != .sleep { anim.overlay("ear_perk") }; return }
+            anim.overlay("ear_perk")
+            heard(false)
+            return
+        }
+        guard !baby, stage.rawValue >= Stage.social.rawValue else { return }
+        guard act != .sleep, act != .eat, act != .drink, act != .nurse, act != .potty, act != .held, act != .fall, act != .tug, act != .trick, act != .perch else { return }
+        guard simd_distance(pos, s.userPos) < 5, let m = pet.words[w], let best = m.max(by: { $0.value < $1.value }), best.value >= 0.2 else { return }
+        let chance = min(1, best.value * 1.1) * (0.55 + 0.45 * pet.bond) * (stage == .senior ? 0.85 : 1)
+        if Float.random(in: 0...1) < chance { obey(best.key) }
+        else { anim.overlay(Bool.random() ? "tilt_l" : "tilt_r") }          // 알아들을 듯 말 듯
+    }
+
+    private func obey(_ k: String) {
+        begin(.ask, for: 6)
+        phase = 20
+        commandAt = s.now
+        commandTrick = k
+        switch k {
+        case "sit": anim.setPosture("sit")
+        case "down": anim.setPosture("down")
+        case "beg", "hind": anim.setPosture(k)
+        case "roll": anim.setPosture("down"); pendingTrick = "roll"
+        case "paw": anim.setPosture("sit"); pendingTrick = "paw"
+        default: break
+        }
+    }
+
+    /// 재주를 해서 간식을 받음: 그 재주를 더 익히고, 6초 안에 들은 낱말을 그 재주와 짝지음 (다른 재주와의 짝은 조금 약해짐)
+    private func associate(_ k: String, _ p: inout PetState) {
+        let v = min(1, (p.tricks[k] ?? 0) + 0.12)
+        let first = (p.tricks[k] ?? 0) < 1 && v >= 1
+        p.tricks[k] = v
+        if first { s.toast("'\(Dog.trickTitle(k))'를 익혔어요") }
+        let name = p.name.lowercased().replacingOccurrences(of: " ", with: "")
+        let ws = Set(heardWords.filter { s.now - $0.1 < 6 }.map { $0.0 }).filter { name.isEmpty || !$0.contains(name) }
+        for w in ws {
+            var m = p.words[w] ?? [:]
+            let before = m[k] ?? 0
+            m[k] = min(1, before + 0.2)
+            for (o, x) in m where o != k { m[o] = max(0, x - 0.08) }
+            p.words[w] = m
+            if before < 0.2 && (m[k] ?? 0) >= 0.2 { s.toast("'\(w)' 소리에 귀를 기울여요") }
+            if before < 0.8 && (m[k] ?? 0) >= 0.8 { s.toast("'\(w)'를 알아들어요 · \(Dog.trickTitle(k))") }
+        }
+        // 너무 많아지면 약한 짝부터 버림
+        if p.words.count > 80 {
+            let keep = p.words.sorted { ($0.value.values.max() ?? 0) > ($1.value.values.max() ?? 0) }.prefix(60)
+            p.words = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+        }
+        heardWords.removeAll()
+    }
+
+    nonisolated static func trickTitle(_ k: String) -> String {
         switch k {
         case "sit": return "앉아"
         case "down": return "엎드려"
         case "beg": return "빵야 자세"
         case "hind": return "두 발로 서기"
+        case "roll": return "굴러"
+        case "paw": return "손"
         default: return k
         }
     }

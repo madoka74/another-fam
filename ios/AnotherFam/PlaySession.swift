@@ -38,6 +38,7 @@ final class PlaySession {
     @ObservationIgnored private var homeM: simd_float4x4?
     @ObservationIgnored private var homeWaitUntil: Double = 0
     @ObservationIgnored private var homeNew = false
+    @ObservationIgnored let ear = VoiceEar()                    // 사람 목소리 (말로 부르기·시키기)
     @ObservationIgnored private var homeLost = false             // 저장된 집 고정점이 기기에 없음 → 기다리지 않고 새로 만들어 확정
     @ObservationIgnored private var oldHomeId: UUID?           // 지난 집을 제때 못 찾아 임시 집을 만든 동안: 늦게라도 찾으면 원래 자리로
     @ObservationIgnored private var spawned = false
@@ -73,6 +74,8 @@ final class PlaySession {
         if let s = UserDefaults.standard.string(forKey: "af.home"), let id = UUID(uuidString: s) { homeId = id }
         now = CACurrentMediaTime()
         if let note = await room.start() { toast(note) }
+        ear.onWord = { [weak self] w in self?.dog?.hear(w) }
+        Task { if let why = await ear.start() { toast(why) } }
         now = CACurrentMediaTime()
         startAt = now
         homeWaitUntil = now + 25        // 지난 집 자리를 다시 알아보는 데 오래 걸릴 수 있음 (0.4.0: 10초 뒤 새 집 → 수건이 내 앞에 뜸)
@@ -94,6 +97,7 @@ final class PlaySession {
     func stop() {
         guard !ended else { return }
         ended = true
+        ear.stop()
         room.stop()
         saveLayout()
         pet.lastSim = Date().timeIntervalSince1970
@@ -525,6 +529,7 @@ final class PlaySession {
             hour = Double(c.hour ?? 12) + Double(c.minute ?? 0) / 60
         }
         room.tick(now: now, dt: dt)
+        ear.tick(now: now)
         if let h = room.head() {
             userPos = simd_make_float3(h.columns.3)
             var f = -simd_make_float3(h.columns.2)

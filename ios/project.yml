@@ -28,7 +28,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "7"
         SWIFT_VERSION: "5.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MARKETING_VERSION: "0.6.0"
+        MARKETING_VERSION: "0.7.0"
         CURRENT_PROJECT_VERSION: "1"
     # 아이클라우드 키-값 저장소: 아이폰 앱과 강아지 상태를 나눔 + 다시 설치해도 되살림 (App ID 에 iCloud 를 켜 둬야 함)
     entitlements:
@@ -44,6 +44,8 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         NSHandsTrackingUsageDescription: 손으로 강아지를 쓰다듬고 안아 주고, 장난감과 물건을 집는 데 사용합니다. 손 정보는 저장하지 않습니다.
         NSWorldSensingUsageDescription: 강아지가 실제 바닥과 가구 사이를 다니고 가구 뒤로 가려지게 하는 데 사용합니다. 공간 정보는 저장하지 않습니다.
+        NSMicrophoneUsageDescription: 강아지 이름을 부르거나 '앉아' 같은 말을 들려주면 강아지가 알아듣고 반응하게 하는 데 사용합니다. 소리는 저장하지 않습니다.
+        NSSpeechRecognitionUsageDescription: 들려준 말을 글자로 알아들어 강아지가 그 말과 재주를 짝지어 배우게 하는 데 사용합니다. 기기 안에서 처리하며 저장하지 않습니다.
         UIApplicationSceneManifest:
           UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
           UIApplicationSupportsMultipleScenes: true
@@ -73,7 +75,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        MARKETING_VERSION: "0.6.0"
+        MARKETING_VERSION: "0.7.0"
         CURRENT_PROJECT_VERSION: "1"
     entitlements:
       path: FamPhone/FamPhone.entitlements

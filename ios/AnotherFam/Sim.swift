@@ -86,6 +86,7 @@ struct PetState: Codable, Equatable {
     var food: Float = 0.6, water: Float = 0.8, energy: Float = 0.7, potty: Float = 0.8, fun: Float = 0.6, love: Float = 0.7, clean: Float = 1
     var health: Float = 1, bond: Float = 0.1, train: Float = 0
     var tricks: [String: Float] = [:]
+    var words: [String: [String: Float]] = [:]                          // 들은 낱말 → 재주 → 익힘 (0~1). 사람마다 다른 말도 각각 배움
     var lastSim: Double = Date().timeIntervalSince1970
     var points = Sim.startPoints
     var pointFrac: Double = 0
@@ -115,7 +116,7 @@ struct PetState: Codable, Equatable {
         species = g(.species, z.species); name = g(.name, z.name); male = g(.male, z.male); born = g(.born, z.born)
         food = g(.food, z.food); water = g(.water, z.water); energy = g(.energy, z.energy); potty = g(.potty, z.potty)
         fun = g(.fun, z.fun); love = g(.love, z.love); clean = g(.clean, z.clean)
-        health = g(.health, z.health); bond = g(.bond, z.bond); train = g(.train, z.train); tricks = g(.tricks, z.tricks)
+        health = g(.health, z.health); bond = g(.bond, z.bond); train = g(.train, z.train); tricks = g(.tricks, z.tricks); words = g(.words, z.words)
         lastSim = g(.lastSim, z.lastSim); points = g(.points, z.points); pointFrac = g(.pointFrac, z.pointFrac); usedSec = g(.usedSec, z.usedSec)
         inv = g(.inv, z.inv); placed = g(.placed, z.placed); layout = g(.layout, z.layout)
         foodBowl = g(.foodBowl, z.foodBowl); waterBowl = g(.waterBowl, z.waterBowl); foodKind = g(.foodKind, z.foodKind)
