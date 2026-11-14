@@ -83,6 +83,39 @@ final class DogSkin {
 
     private static var texC: TextureResource?
     private static var texH: TextureResource?
+    private static var hBytes: [UInt8] = [], hW = 0, hH = 0
+    private static var masks: [Int: TextureResource] = [:]
+
+    /// 높이 무늬(fur_h)를 문턱으로 자른 흑백 무늬 (문턱 0.01 단위로 한 번만 만듦)
+    static func mask(_ thr: Float) -> TextureResource? {
+        let key = Int((thr * 100).rounded())
+        if let t = masks[key] { return t }
+        if hBytes.isEmpty {
+            guard let url = Bundle.main.url(forResource: "fur_h", withExtension: "png", subdirectory: "Model"),
+                  let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+            let w = cg.width, h = cg.height
+            var buf = [UInt8](repeating: 0, count: w * h)
+            let ok = buf.withUnsafeMutableBytes { raw -> Bool in
+                guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                          space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+                ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+                return true
+            }
+            guard ok else { return nil }
+            hBytes = buf; hW = w; hH = h
+        }
+        let cut = UInt8(min(255, max(0, Float(key) * 2.55)))
+        var out = [UInt8](repeating: 0, count: hW * hH)
+        for i in 0..<out.count where hBytes[i] >= cut { out[i] = 255 }
+        guard let prov = CGDataProvider(data: Data(out) as CFData),
+              let img = CGImage(width: hW, height: hH, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: hW,
+                                space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                                provider: prov, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+              let tex = try? TextureResource.generate(from: img, options: .init(semantic: .raw)) else { return nil }
+        masks[key] = tex
+        return tex
+    }
 
     static func color(_ c: SIMD3<Float>) -> UIColor {
         UIColor(red: CGFloat(min(1, max(0, c.x))), green: CGFloat(min(1, max(0, c.y))), blue: CGFloat(min(1, max(0, c.z))), alpha: 1)
@@ -105,12 +138,21 @@ final class DogSkin {
         if let tc = texC, let th = texH {
             var pc = MaterialParameters.Texture(tc)
             pc.sampler = repeatSampler
-            var ph = MaterialParameters.Texture(th)
-            ph.sampler = repeatSampler
+            // 털 가닥 = 높이 무늬가 문턱을 넘는 곳. 그 자리는 완전히 불투명(0 아니면 1인 겹마다의 무늬)
+            // 0.5.0 까지: 높이 무늬를 그대로 불투명도로 써서, 문턱을 넘은 가닥도 높이값(0.1~0.9)만큼 반투명 → 몸이 비쳐 보였음
+            let thr = min(0.95, 0.08 + 0.84 * t * t + thin * 0.06 * t)
             m.baseColor = .init(tint: color(c), texture: pc)
-            m.blending = .transparent(opacity: .init(scale: 1, texture: ph))
-            // 문턱: 안쪽 겹은 낮게(속털이 빽빽해 속이 비치지 않게), 바깥 겹만 가늘게 (0.4.0: 0.14 + 0.84t 는 속이 비쳐 보였음)
-            m.opacityThreshold = min(0.95, 0.05 + 0.88 * t * t + thin * 0.06 * t)
+            if let mk = mask(thr) {
+                var pm = MaterialParameters.Texture(mk)
+                pm.sampler = repeatSampler
+                m.blending = .transparent(opacity: .init(scale: 1, texture: pm))
+                m.opacityThreshold = 0.5
+            } else {
+                var ph = MaterialParameters.Texture(th)
+                ph.sampler = repeatSampler
+                m.blending = .transparent(opacity: .init(scale: 1, texture: ph))
+                m.opacityThreshold = thr
+            }
         } else {
             m.baseColor = .init(tint: color(c))
         }

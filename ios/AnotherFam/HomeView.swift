@@ -234,7 +234,7 @@ struct StorageTab: View {
 struct SettingsTab: View {
     @State private var volume: Double = UserDefaults.standard.object(forKey: "af.volume") as? Double ?? 0
     @State private var askReset = false
-    @State private var days: Double = 0
+    @State private var entry = ""
     private var model: AppModel { AppModel.shared }
 
     var body: some View {
@@ -252,28 +252,33 @@ struct SettingsTab: View {
                     UserDefaults.standard.set(x, forKey: "af.volume")
                 }
             }
-            // 함께한 날: 숫자판 대신 끌기·단추로 (0.4.0: 숫자 칸을 정확히 눌러야만 숫자판이 떠 어려웠음)
-            Section("시험") {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("함께한 날")
-                        Text(days.formatted(.number.precision(.fractionLength(0...1))) + "일").font(.title2.weight(.semibold)).monospacedDigit()
-                        Text("→ " + PetState.ageText(min(Sim.maxAge, max(0, days) * Sim.ageRate))).foregroundStyle(.secondary)
-                        Spacer()
+            // 함께한 날: 화면 안 숫자판으로 바로 입력 (0.4.0 숫자 칸은 정확히 눌러야 했고, 0.5.0 슬라이더는 맞추기 어려웠고
+            // 단추는 폼 한 줄 안에 여럿이라 눌리지 않았음 — 한 줄에 단추가 여럿이면 모두 .bordered 로 따로 눌리게)
+            Section("시험 · 함께한 날") {
+                let val = min(Sim.maxAge / Sim.ageRate, Double(entry) ?? 0)
+                HStack(spacing: 24) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text((entry.isEmpty ? "0" : entry) + "일").font(.system(size: 44, weight: .semibold)).monospacedDigit()
+                        Text("강아지 나이 " + PetState.ageText(val * Sim.ageRate)).foregroundStyle(.secondary)
+                        Button("적용") { model.setTogetherDays(val); entry = val.formatted(.number.precision(.fractionLength(0...1))) }
+                            .buttonStyle(.borderedProminent).padding(.top, 6)
                     }
-                    Slider(value: $days, in: 0...(Sim.maxAge / Sim.ageRate), step: 0.5)
-                    HStack(spacing: 10) {
-                        ForEach([-10.0, -1, -0.5, 0.5, 1, 10], id: \.self) { d in
-                            Button(d > 0 ? "+\(d.formatted())" : d.formatted()) {
-                                days = min(Sim.maxAge / Sim.ageRate, max(0, ((days + d) * 2).rounded() / 2))
+                    Spacer()
+                    Grid(horizontalSpacing: 10, verticalSpacing: 10) {
+                        ForEach([["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], [".", "0", "⌫"]], id: \.self) { row in
+                            GridRow {
+                                ForEach(row, id: \.self) { k in
+                                    Button { key(k) } label: {
+                                        Group { if k == "⌫" { Image(systemName: "delete.left") } else { Text(k) } }
+                                            .font(.title2.weight(.medium)).frame(width: 64, height: 44)
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
                             }
-                            .monospacedDigit()
                         }
-                        Spacer()
-                        Button("적용") { model.setTogetherDays(days) }.buttonStyle(.borderedProminent)
                     }
                 }
-                .padding(.vertical, 6)
+                .padding(.vertical, 8)
             }
             Section("가족") {
                 Button("처음부터 다시", role: .destructive) { askReset = true }
@@ -286,12 +291,24 @@ struct SettingsTab: View {
         }
         .onAppear {
             SoundBank.shared.master = volume
-            if let p = model.pet { days = ((Date().timeIntervalSince1970 - p.born) / 86400 * 10).rounded() / 10 }
+            if let p = model.pet { entry = ((Date().timeIntervalSince1970 - p.born) / 86400).formatted(.number.precision(.fractionLength(0...1)).grouping(.never)) }
         }
         .confirmationDialog("지금 가족과 헤어지고 처음부터 다시 시작할까요?", isPresented: $askReset, titleVisibility: .visible) {
             Button("헤어지기", role: .destructive) { model.reset() }
             Button("취소", role: .cancel) {}
         }
         .padding(24)
+    }
+
+    /// 숫자판 한 칸 (소수 한 자리까지, 최대 182.5일)
+    private func key(_ k: String) {
+        switch k {
+        case "⌫": if !entry.isEmpty { entry.removeLast() }
+        case ".": if !entry.contains(".") { entry = (entry.isEmpty ? "0" : entry) + "." }
+        default:
+            if let dot = entry.firstIndex(of: "."), entry.distance(from: dot, to: entry.endIndex) > 1 { return }
+            let next = entry == "0" ? k : entry + k
+            if (Double(next) ?? 0) <= Sim.maxAge / Sim.ageRate { entry = next }
+        }
     }
 }

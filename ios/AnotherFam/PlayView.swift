@@ -11,9 +11,11 @@ struct PlayView: View {
         RealityView { content, attachments in
             content.add(s.root)
             if let c = attachments.entity(for: "card") { s.attachCard(c) }
+            if let m = attachments.entity(for: "menu") { s.attachPanel(m) }
             s.updateSub = content.subscribe(to: SceneEvents.Update.self) { e in s.tick(Float(e.deltaTime)) }
         } attachments: {
             Attachment(id: "card") { StatusCard(s: s) }
+            Attachment(id: "menu") { SpacePanel(s: s) }
         }
         // 강아지를 바라보고 집으면 상태 카드
         .gesture(SpatialTapGesture().targetedToEntity(where: .has(DogTag.self)).onEnded { _ in s.tapDog() })
@@ -31,6 +33,42 @@ struct PlayView: View {
             s.stop()
             if !AppModel.shared.mainOpen { openWindow(id: "main") }      // 쉬러 가면 메인 창으로
         }
+    }
+}
+
+/// 공간 안 메뉴판: 보관함 · 상점 · 설정 (메인 창의 같은 화면을 그대로 씀)
+struct SpacePanel: View {
+    let s: PlaySession
+    private var model: AppModel { AppModel.shared }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 16) {
+                Picker("", selection: Binding(get: { s.panelTab }, set: { s.panelTab = $0 })) {
+                    Text("보관함").tag(1)
+                    Text("상점").tag(2)
+                    Text("설정").tag(3)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 420)
+                Spacer()
+                Button { s.closePanel(); model.notice = nil } label: { Image(systemName: "xmark") }.buttonBorderShape(.circle)
+            }
+            .padding(.horizontal, 28).padding(.top, 24)
+            if let n = model.notice {
+                Text(n).font(.callout).foregroundStyle(.orange).padding(.top, 12)
+            }
+            Group {
+                switch s.panelTab {
+                case 2: ShopTab()
+                case 3: SettingsTab()
+                default: StorageTab()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: 900, height: 660)
+        .glassBackgroundEffect()
     }
 }
 

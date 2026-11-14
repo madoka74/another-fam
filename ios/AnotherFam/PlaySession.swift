@@ -23,6 +23,8 @@ final class PlaySession {
 
     // 화면에 보이는 것
     var cardOn = false
+    var panelOn = false                  // 공간 안 메뉴판 (보관함·상점·설정)
+    var panelTab = 1                     // 1 보관함 · 2 상점 · 3 설정
     var toastText: String?
     var shown = PetState()
     var walking = false
@@ -31,6 +33,8 @@ final class PlaySession {
 
     @ObservationIgnored private var card: Entity?
     @ObservationIgnored private var cardUntil: Double = 0
+    @ObservationIgnored private var panel: Entity?
+    @ObservationIgnored private var panelFrom = SIMD3<Float>(0, 0, 0)
     @ObservationIgnored private var toastUntil: Double = 0
     @ObservationIgnored private var publishAt: Double = 0
     @ObservationIgnored private var saveAt: Double = 0
@@ -98,6 +102,86 @@ final class PlaySession {
         card = e
         e.isEnabled = false
         root.addChild(e)
+    }
+
+    func attachPanel(_ e: Entity) {
+        panel = e
+        e.isEnabled = false
+        root.addChild(e)
+    }
+
+    /// 메뉴판 열기: 메인 창 대신 공간 안에서 — 강아지를 가리지 않는 쪽(정면·좌·우)에, 앞에 현실 물건이 없는 가까운 자리
+    /// (0.4.0 메인 창은 멀리 떠 현실과 겹쳤고, 0.5.0 은 아래쪽 방석 위에 떠 카드 뒤에 가려졌음)
+    func openPanel(_ tab: Int) {
+        panelTab = tab
+        cardOn = false
+        panelOn = true
+        panel?.isEnabled = true                                  // 크기를 재려면 켜져 있어야 함
+        placePanel()
+    }
+
+    func closePanel() { panelOn = false }
+
+    private func placePanel() {
+        guard let e = panel else { return }
+        let eye = userPos, f = userFwd
+        let right = SIMD3<Float>(-f.z, 0, f.x)
+        var side: Float = 0                                      // 강아지가 오른쪽이면 +
+        if let d = dog, d.entity.isEnabled {
+            let v = d.bodyWorld - eye
+            side = simd_dot(v, right) / max(0.1, simd_length(SIMD2<Float>(v.x, v.z)))
+        }
+        let order: [Float] = side > 0.15 ? [-0.6, 0, 0.6] : (side < -0.15 ? [0.6, 0, -0.6] : [-0.6, 0.6, 0])
+        // 판 크기(크기 1일 때). 아직 못 재면 900×660pt 를 1pt ≈ 0.75mm 로 어림
+        let vb = e.visualBounds(relativeTo: e).extents
+        let w1: Float = vb.x > 0.2 ? vb.x : 0.675
+        let h1: Float = vb.y > 0.15 ? vb.y : 0.495
+        let want: Float = 0.8
+        var best: (a: Float, free: Float) = (order[0], -1)
+        for a in order {
+            let dir = f * cos(a) + right * sin(a)
+            let k = 0.64 * want / 0.8 / w1                         // 0.8m 앞에서 너비 64cm
+            let c = eye + dir * want + SIMD3<Float>(0, -0.18, 0)
+            let fr = freeDist(eye: eye, center: c, halfW: w1 * k / 2, halfH: h1 * k / 2, skip: [e])
+            if fr >= want + 0.05 { best = (a, fr); break }
+            if fr > best.free { best = (a, fr) }
+        }
+        let dir = f * cos(best.a) + right * sin(best.a)
+        let dist = min(want, max(0.5, best.free - 0.1))
+        let at = eye + dir * dist + SIMD3<Float>(0, -0.18 * dist / want, 0)
+        let k = 0.64 * dist / 0.8 / w1
+        e.position = at
+        e.look(at: at - (eye - at), from: at, relativeTo: nil)
+        e.scale = SIMD3<Float>(repeating: k)
+        panelFrom = eye
+    }
+
+    /// 눈에서 판(가운데·네 모서리)까지 가는 길에 처음 부딪히는 것까지의 거리 (판·강아지는 빼고). 없으면 아주 큰 값
+    private func freeDist(eye: SIMD3<Float>, center: SIMD3<Float>, halfW: Float, halfH: Float, skip: [Entity]) -> Float {
+        guard let sc = root.scene else { return .infinity }
+        let fwd = simd_normalize(center - eye)
+        var r = simd_cross(SIMD3<Float>(0, 1, 0), fwd)
+        r = simd_length(r) > 1e-3 ? simd_normalize(r) : SIMD3<Float>(1, 0, 0)
+        let up = simd_cross(fwd, r)
+        var best = Float.infinity
+        for (sx, sy) in [(Float(0), Float(0)), (1, 1), (-1, 1), (1, -1), (-1, -1)] {
+            let p = center + r * (halfW * sx) + up * (halfH * sy)
+            let len = simd_distance(eye, p)
+            for h in sc.raycast(from: eye, to: eye + (p - eye) / len * (len + 0.05), query: .all, mask: .all, relativeTo: nil) {
+                if skip.contains(where: { under(h.entity, $0) }) { continue }
+                if let d = dog, under(h.entity, d.entity) { continue }
+                if props.contains(where: { $0.heldBy != nil && under(h.entity, $0.entity) }) { continue }
+                // 판 쪽 거리로 바꿔 셈 (모서리 길은 가운데보다 김)
+                best = min(best, h.distance * simd_distance(eye, center) / len)
+            }
+        }
+        return best
+    }
+
+    private func under(_ e: Entity, _ a: Entity) -> Bool {
+        var x: Entity? = e
+        while let y = x { if y === a { return true }; x = y.parent }
+        return false
     }
 
     func toast(_ s: String) {
@@ -321,8 +405,9 @@ final class PlaySession {
         } else if id == "treat" || id == "dental" {
             guard pet.use(id) else { return "남은 것이 없어요" }
         } else if props.contains(where: { $0.id == id }) { return "이미 꺼내 두었어요" }
-        var at = userPos + f * 0.5
-        at.y = max(fy + 0.1, userPos.y - 0.35)
+        // 손에 쥘 것은 오른손 앞 아래에 (0.5.0: 바로 앞 가슴 높이라 강아지 위 카드와 겹쳐 보였음)
+        var at = userPos + f * 0.42 + SIMD3<Float>(-f.z, 0, f.x) * 0.2
+        at.y = max(fy + 0.1, userPos.y - 0.5)
         if kindProbe.kind == .fixed {
             let want = SIMD2<Float>(userPos.x + f.x * 0.8, userPos.z + f.z * 0.8)
             let q = room.nav.openSpot(near: want, clear: 0.15, within: 1.0) ?? want
@@ -517,6 +602,10 @@ final class PlaySession {
 
     /// 강아지 메뉴 카드: 강아지 위에서 나를 봄. 강아지가 아직 없으면(준비 중) 내 앞에
     private func showCard() {
+        if let p = panel {
+            if p.isEnabled != panelOn { p.isEnabled = panelOn }
+            if panelOn && simd_distance(userPos, panelFrom) > 1.2 { placePanel() }     // 멀리 걸어가면 다시 곁으로
+        }
         guard let c = card else { return }
         if cardOn && now >= cardUntil { cardOn = false }
         if toastText != nil && now >= toastUntil { toastText = nil }
@@ -532,6 +621,17 @@ final class PlaySession {
             let v = userPos - at
             let l = simd_length(v)
             if l > 0.01 { at += v / l * min(0.15, l * 0.3) }
+        }
+        // 카드 앞을 가리는 것(현실 가구·꺼내 둔 물건)이 있으면 그보다 가까이 당겨 겹치지 않게, 보이는 크기는 그대로
+        let d0 = simd_distance(userPos, at)
+        if d0 > 0.3 {
+            let b = c.visualBounds(relativeTo: c).extents
+            let fr = freeDist(eye: userPos, center: at, halfW: b.x * k / 2, halfH: b.y * k / 2, skip: [c] + (panel.map { [$0] } ?? []))
+            if fr < d0 {
+                let nd = max(0.4, fr - 0.06)
+                at = userPos + (at - userPos) * (nd / d0)
+                k *= nd / d0
+            }
         }
         c.position = at
         c.look(at: at - (userPos - at), from: at, relativeTo: nil)

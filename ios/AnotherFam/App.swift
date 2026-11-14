@@ -16,8 +16,6 @@ struct AnotherFamApp: App {
             HomeView()
         }
         .defaultSize(width: 900, height: 660)
-        // 메인 창은 손 닿는 가까이·낮게 (0.4.0: 시스템이 정한 먼 자리에 떠 현실 물건과 겹쳐 보였음)
-        .defaultWindowPlacement { _, _ in WindowPlacement(.utilityPanel) }
         .onChange(of: phase) { _, p in
             if p == .active { AppModel.shared.wake() } else { AppModel.shared.sleep() }
         }
@@ -160,8 +158,10 @@ final class AppModel {
 
     /// 메인 창을 그 탭으로 (닫혀 있으면 엶) — 함께하는 동안 메인 창은 필요할 때만 뜸
     func showMain(tab t: Int, note: String? = nil) {
-        tab = t
         if let note { notice = note }
+        // 함께하는 동안엔 창 대신 공간 안 메뉴판으로 (창은 시스템이 정한 자리에 떠 현실·카드와 겹쳤음)
+        if playOpen, let s = session { s.openPanel(max(1, t)); return }
+        tab = t
         if !mainOpen { openMain?() }
     }
 }

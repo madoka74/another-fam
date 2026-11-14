@@ -57,6 +57,9 @@ final class DogStage {
         pet = p
         if d != doing || !started {
             doing = d
+            // 무대가 준비되기 전에 불리면 시작한 것으로 치지 않음
+            // (0.4.0~0.5.0: 준비 전 호출로 '시작함'만 남고 자세를 안 잡아, 자는 중인데 서 있었음)
+            guard anim != nil else { return }
             started = true
             begin()
         }
