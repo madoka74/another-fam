@@ -45,6 +45,21 @@ final class Prop {
     private(set) var spout = SIMD3<Float>(0, 0.1, 0)
     private var content: ModelEntity?
     private var kib: [Entity] = []                  // 사료 알갱이 층 (밥그릇)
+    private var waterLine: ModelEntity?             // 물그릇 벽에 닿은 물 높이 선
+    private var waterBuilt: Float = -1              // 물 덩어리를 마지막으로 만든 양
+
+    /// 물 재질: 양이 많을수록 더 푸르고 진함 (실제 물도 깊을수록 그릇 바닥이 덜 보이고 푸르게 보임)
+    static func waterMat(_ f: Float, line: Bool) -> PhysicallyBasedMaterial {
+        var m = PhysicallyBasedMaterial()
+        let a = SIMD3<Float>(0.66, 0.84, 0.93), b = SIMD3<Float>(0.18, 0.47, 0.72)
+        let c = line ? b * 0.85 : a + (b - a) * f
+        m.baseColor = .init(tint: UIColor(red: CGFloat(c.x), green: CGFloat(c.y), blue: CGFloat(c.z), alpha: 1))
+        m.roughness = .init(floatLiteral: 0.03)
+        m.clearcoat = .init(scale: 1)
+        m.clearcoatRoughness = .init(scale: 0.02)
+        m.blending = .transparent(opacity: .init(floatLiteral: line ? 0.8 : 0.32 + 0.4 * f))
+        return m
+    }
     private var label: ModelEntity?
     private var streamE: ModelEntity?
     private var drops: [ModelEntity] = []
@@ -77,15 +92,13 @@ final class Prop {
             add(Geo.lathe([(0, 0), (0.066, 0), (0.068, 0.002), (0.066, 0.0035), (0, 0.003)], seg: 32), Geo.mat(SIMD3<Float>(0.08, 0.08, 0.09), rough: 0.9))
             if water {
                 // 물: 비치는 물 면 (그릇 바닥이 보임) — 0.9 는 색만 다른 불투명 원판이라 사료와 구별이 안 됐음
-                var m = PhysicallyBasedMaterial()
-                m.baseColor = .init(tint: UIColor(red: 0.62, green: 0.78, blue: 0.88, alpha: 1))
-                m.roughness = .init(floatLiteral: 0.02)
-                m.clearcoat = .init(scale: 1)
-                m.clearcoatRoughness = .init(scale: 0.02)
-                m.blending = .transparent(opacity: .init(floatLiteral: 0.42))
-                let c = ModelEntity(mesh: Geo.lathe([(0, 0), (1, 0), (1, 0.0006), (0, 0.0006)], seg: 40) ?? .generateBox(size: 0.001), materials: [m])
+                // 0.10.2: 물 덩어리(바닥~물 높이)로 — 얇은 물 면 하나는 흰 도자기에서 얼마나 찼는지 구분이 어려웠음
+                let c = ModelEntity(mesh: .generateBox(size: 0.001), materials: [Prop.waterMat(0.5, line: false)])
                 entity.addChild(c)
                 content = c
+                let line = ModelEntity(mesh: .generateBox(size: 0.001), materials: [Prop.waterMat(0.5, line: true)])
+                c.addChild(line)
+                waterLine = line
             } else {
                 // 사료: 그릇 모양대로 쌓인 더미 + 맨 위 알갱이 두 겹(두 가지 색) + 바닥에 남은 몇 알
                 let pile = ModelEntity(mesh: Geo.lathe([(0, 0), (1, 0), (0.97, 0.004), (0.7, 0.007), (0, 0.009)], seg: 32) ?? .generateBox(size: 0.001),
@@ -475,12 +488,23 @@ final class Prop {
             c.isEnabled = fill > 0.02
             c.scale = SIMD3<Float>(0.35 + 0.65 * fill, 1, 0.35 + 0.65 * fill)
         case "bowl_water":
-            // 물 높이 = 그릇 안 높이, 반지름은 그 높이의 그릇 안쪽 (물 면 둘레로 그릇 벽이 보여 얼마나 찼는지 알 수 있음)
+            // 물 = 그릇 바닥부터 물 높이까지 찬 덩어리: 많을수록 진하고 푸르게, 벽에 닿은 물 높이에 진한 물 선
+            // (0.10.1 까지: 비치는 얇은 물 면 하나(불투명도 0.42)라 흰 그릇에서 반쯤인지 가득인지 구분이 어려웠음)
             c.isEnabled = fill > 0.02
-            let y = contentY
-            let r = Prop.bowlR(y) - 0.0008
-            c.position = SIMD3<Float>(0, y, 0)
-            c.scale = SIMD3<Float>(r, 1, r)
+            guard c.isEnabled else { waterBuilt = -1; return }
+            guard waterBuilt < 0 || abs(fill - waterBuilt) > 0.012 else { return }
+            waterBuilt = fill
+            let f = min(1, fill)
+            let y = contentY, r = Prop.bowlR(y) - 0.0008
+            let y0: Float = 0.0065, r0: Float = 0.0595
+            c.position = .zero
+            c.scale = SIMD3<Float>(repeating: 1)
+            if let m = Geo.lathe([(0, y0), (r0, y0), (r, y), (0, y)], seg: 40) { c.model?.mesh = m }
+            c.model?.materials = [Prop.waterMat(f, line: false)]
+            if let l = waterLine {
+                if let m = Geo.lathe([(r - 0.0004, y - 0.0022), (r + 0.0002, y + 0.0004)], seg: 48) { l.model?.mesh = m }
+                l.model?.materials = [Prop.waterMat(f, line: true)]
+            }
         case "bowl_food":
             // 사료: 가득일수록 더미가 높고 넓음. 아주 적으면 바닥에 몇 알만
             let y = contentY

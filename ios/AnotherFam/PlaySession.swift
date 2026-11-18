@@ -49,8 +49,6 @@ final class PlaySession {
     @ObservationIgnored private var adding = 0
     @ObservationIgnored private var beatAt: Double = 0
     @ObservationIgnored private var tools = ToolWork()
-    @ObservationIgnored private let bodyCol = Entity()
-    @ObservationIgnored private let legCol = Entity()
     @ObservationIgnored let ear = VoiceEar()                    // 사람 목소리 (말로 부르기·시키기)
     @ObservationIgnored private var homeLost = false             // 저장된 집 고정점이 기기에 없음 → 기다리지 않고 새로 만들어 확정
     @ObservationIgnored private var oldHomeId: UUID?           // 지난 집을 제때 못 찾아 임시 집을 만든 동안: 늦게라도 찾으면 원래 자리로
@@ -83,13 +81,6 @@ final class PlaySession {
         SoundBank.shared.preload()
         root.addChild(room.root)
         root.components.set(PhysicsSimulationComponent())      // 물리 기준을 공간 하나로 (중력 9.8m/s²)
-        // 내 몸 부딪힘: 공·장난감이 내 몸을 뚫고 지나가지 않게 (머리 아래 몸통 기둥 + 앉으면 앞으로 뻗은 다리)
-        for (i, e) in [bodyCol, legCol].enumerated() {
-            e.components.set(CollisionComponent(shapes: [i == 0 ? .generateBox(size: SIMD3<Float>(0.34, 1.0, 0.26)) : .generateBox(size: SIMD3<Float>(0.36, 0.16, 0.6))]))
-            e.components.set(PhysicsBodyComponent(massProperties: .default, material: PhysicsMaterialResource.generate(friction: 0.6, restitution: 0.2), mode: .kinematic))
-            e.isEnabled = false
-            root.addChild(e)
-        }
         room.onAnchor = { [weak self] a, removed in self?.anchor(a, removed) }
         if let s = UserDefaults.standard.string(forKey: "af.home"), let id = UUID(uuidString: s) { homeId = id }
         if let m = UserDefaults.standard.dictionary(forKey: "af.anchors") as? [String: String] {
@@ -755,11 +746,20 @@ final class PlaySession {
         useProp(p)
     }
 
-    /// 바라보고 집기: 그릇은 봉지·물병을 꺼내 주고, 치울 것·패드는 어떻게 하는지 알려 줌 (바로 사라지거나 차지 않음 — 0.10.0)
+    /// 바라보고 집기: 그릇·치울 것·패드는 어떻게 하는지 알려 줌 (바로 사라지거나 차지 않음 — 0.10.0, 그릇도 도구를 저절로 꺼내지 않음 — 0.10.2)
     private func useProp(_ p: Prop) {
         switch p.id {
-        case "bowl_food": feed()
-        case "bowl_water": giveWater()
+        // 그릇 탭: 봉지·물병을 저절로 꺼내지 않고 하는 법만 알려 줌 (0.10.2 요청 — 도구는 보관함에서 꺼냄)
+        case "bowl_food":
+            if pet.age() < 21 { toast("아직 젖만 먹어요 · 보관함에서 젖병을 꺼내 주세요") }
+            else if p.fill > 0.95 { toast("밥그릇이 가득 차 있어요") }
+            else if isOut("foodbag") { toast("사료 봉지를 집어 밥그릇 위에서 기울여 주세요") }
+            else { toast("보관함에서 사료를 꺼내 밥그릇 위에서 기울여 주세요") }
+        case "bowl_water":
+            if pet.age() < 21 { toast("아직 젖만 먹어요") }
+            else if p.fill > 0.95 { toast("물그릇이 가득 차 있어요") }
+            else if isOut("jug") { toast("물병을 집어 물그릇 위에서 기울여 주세요") }
+            else { toast("보관함에서 물병을 꺼내 물그릇 위에서 기울여 주세요") }
         case "pad": toast(pet.count("pad") > 0 ? "보관함에서 새 패드를 꺼내 바닥에 깔면 갈아져요" : "새 패드가 없어요 · 상점에서 살 수 있어요")
         case "poop": toast(pet.count("bag") > 0 || isOut("bag") ? "배변 봉투를 들고 집어 주세요" : "배변 봉투가 필요해요")
         case "pee": toast(pet.count("pad") > 0 || isOut("padsheet") ? "패드를 한 장 꺼내 들고 닦아 주세요" : "닦을 패드가 필요해요")
@@ -809,16 +809,20 @@ final class PlaySession {
             ex.append((u, 0.24))
             if sitting { for k in 1...3 { ex.append((u + f2 * (0.2 * Float(k)), 0.2)) } }
             else { ex.append((u + f2 * 0.12, 0.2)) }
-            // 물리 몸: 눈 아래 15cm 부터 바닥까지 기둥, 앉아 있으면 다리 상자
-            let top = userPos.y - 0.15, h = max(0.3, top - fy)
-            bodyCol.isEnabled = true
-            bodyCol.setScale(SIMD3<Float>(1, h, 1), relativeTo: nil)
-            bodyCol.setPosition(SIMD3<Float>(userPos.x - userFwd.x * 0.04, fy + h / 2, userPos.z - userFwd.z * 0.04), relativeTo: nil)
-            bodyCol.setOrientation(Q.ry(atan2(userFwd.x, userFwd.z)), relativeTo: nil)
-            legCol.isEnabled = sitting
-            if sitting {
-                legCol.setPosition(SIMD3<Float>(userPos.x + userFwd.x * 0.42, fy + 0.08, userPos.z + userFwd.z * 0.42), relativeTo: nil)
-                legCol.setOrientation(Q.ry(atan2(userFwd.x, userFwd.z)), relativeTo: nil)
+            // 굴러오는 장난감이 내 몸을 뚫지 않게: 몸통(눈 8cm 뒤, 반지름 20cm) 안으로 '들어오는 중'인 것만 튕겨 냄.
+            // 0.10.1 은 몸·다리를 물리 상자로 둬서 ① 아래로 쏘는 면 찾기에 상자가 잡혀 내려놓은 팸·물건이 그 위(10~20cm)에 떴고
+            // ② 몸을 숙이면 상자가 머리를 따라 앞으로 와 바닥 장난감을 밀어냈음 → 상자 없이 속도만 바꿈, 서 있을 때만
+            if userPos.y - fy > 1.3 {
+                let c = SIMD2<Float>(userPos.x - userFwd.x * 0.08, userPos.z - userFwd.z * 0.08)
+                for p in props where p.kind == .toy && p.heldBy == nil {
+                    let q = p.pos, d = SIMD2<Float>(q.x, q.z) - c, r = simd_length(d)
+                    guard r > 1e-3, r < 0.2, q.y < userPos.y - 0.2 else { continue }
+                    let n = d / r, v = p.velocity, vn = v.x * n.x + v.z * n.y
+                    if vn < -0.15 {
+                        let out = SIMD2<Float>(v.x, v.z) - n * (1.35 * vn)
+                        p.setVelocity(SIMD3<Float>(out.x, v.y, out.y))
+                    }
+                }
             }
         }
         room.nav.extra = ex
