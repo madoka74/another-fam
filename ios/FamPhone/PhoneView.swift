@@ -5,6 +5,7 @@ import RealityKit
 struct PhoneView: View {
     private var m: PhoneModel { PhoneModel.shared }
     @State private var stage = DogStage()
+    @State private var info: (key: String, text: String)?
 
     private let ground = Color(red: 0.105, green: 0.110, blue: 0.120)
     private let card = Color.white.opacity(0.06)
@@ -37,6 +38,13 @@ struct PhoneView: View {
                 try? await Task.sleep(nanoseconds: 60_000_000_000)
             }
         }
+        .task {
+            // '지금 함께 있어요' 같은 표시가 오래된 채 남지 않게 15초마다 다시 그림
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                m.clock = Date().timeIntervalSince1970
+            }
+        }
         .onChange(of: m.pet) { _, p in
             if let p { stage.show(p, m.doing) }
         }
@@ -62,6 +70,8 @@ struct PhoneView: View {
             .simultaneousGesture(MagnifyGesture()
                 .onChanged { stage.pinch($0.magnification) }
                 .onEnded { _ in stage.pinchEnd() })
+            // 톡 건드리면 지금 상태에 맞게 작게 반응 (소리와 함께)
+            .simultaneousGesture(SpatialTapGesture().onEnded { _ in stage.poke() })
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Text(p.name).font(.system(size: 32, weight: .bold))
@@ -91,16 +101,31 @@ struct PhoneView: View {
     // MARK: 상태
     private func needsCard(_ p: PetState) -> some View {
         let items = needs(p)
-        return LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 16) {
-            ForEach(0..<items.count, id: \.self) { i in
-                VStack(spacing: 5) {
-                    Ring(icon: items[i].1, value: items[i].2)
-                    Text(items[i].0).font(.caption2).foregroundStyle(.secondary)
+        return VStack(spacing: 14) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 16) {
+                ForEach(0..<items.count, id: \.self) { i in
+                    let k = NeedInfo.key(items[i].0)
+                    Button {
+                        // 고리를 누르면 그 욕구의 지금과 앞으로 (비전의 카드·메인 메뉴와 같은 글)
+                        if info?.key == k { info = nil } else { info = (k, NeedInfo.text(p, k)) }
+                    } label: {
+                        VStack(spacing: 5) {
+                            Ring(icon: items[i].1, value: items[i].2)
+                                .overlay(Circle().stroke(.white.opacity(info?.key == k ? 0.5 : 0), lineWidth: 2).padding(-4))
+                            Text(items[i].0).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
+            }
+            if let info {
+                Text(info.text).font(.subheadline).multilineTextAlignment(.center).frame(maxWidth: .infinity)
+                    .padding(.horizontal, 6).transition(.opacity)
             }
         }
         .padding(.vertical, 18).padding(.horizontal, 12)
         .background(card, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .animation(.easeOut(duration: 0.2), value: info?.key)
     }
 
     private func needs(_ p: PetState) -> [(String, String, Float)] {

@@ -39,6 +39,16 @@ final class PlaySession {
     @ObservationIgnored private var homeM: simd_float4x4?
     @ObservationIgnored private var homeWaitUntil: Double = 0
     @ObservationIgnored private var homeNew = false
+    // 0.10.0 자리: 고정점은 처음 알려 준 자리 그대로가 아니라, 비전프로가 방을 다시 알아보며 고쳐 주는 자리를 끝까지 따라감
+    @ObservationIgnored private var homeApplied: simd_float4x4?           // 지금 물건들이 놓인 기준이 된 집 고정점
+    @ObservationIgnored private var homeFirstAt: Double = 0
+    @ObservationIgnored private var homeMovedAt: Double = 0
+    @ObservationIgnored private var propAnchor: [String: UUID] = [:]      // 바닥 물건(담요·그릇·방석·패드·계단)마다 자기 고정점
+    @ObservationIgnored private var anchorM: [UUID: simd_float4x4] = [:]
+    @ObservationIgnored private var anchorApplied: [UUID: simd_float4x4] = [:]
+    @ObservationIgnored private var adding = 0
+    @ObservationIgnored private var beatAt: Double = 0
+    @ObservationIgnored private var tools = ToolWork()
     @ObservationIgnored let ear = VoiceEar()                    // 사람 목소리 (말로 부르기·시키기)
     @ObservationIgnored private var homeLost = false             // 저장된 집 고정점이 기기에 없음 → 기다리지 않고 새로 만들어 확정
     @ObservationIgnored private var oldHomeId: UUID?           // 지난 집을 제때 못 찾아 임시 집을 만든 동안: 늦게라도 찾으면 원래 자리로
@@ -73,6 +83,13 @@ final class PlaySession {
         root.components.set(PhysicsSimulationComponent())      // 물리 기준을 공간 하나로 (중력 9.8m/s²)
         room.onAnchor = { [weak self] a, removed in self?.anchor(a, removed) }
         if let s = UserDefaults.standard.string(forKey: "af.home"), let id = UUID(uuidString: s) { homeId = id }
+        if let m = UserDefaults.standard.dictionary(forKey: "af.anchors") as? [String: String] {
+            for (k, v) in m { if let id = UUID(uuidString: v) { propAnchor[k] = id } }
+        }
+        // 함께 있는 동안은 아이폰 알림을 멈추게 알림 (폰은 이 표시가 있는 동안 알림을 예약하지 않음)
+        pet.together = true
+        Store.save(pet, force: true)
+        beatAt = CACurrentMediaTime() + 1200
         now = CACurrentMediaTime()
         if let note = await room.start() { toast(note) }
         ear.onWord = { [weak self] w in self?.dog?.hear(w) }
@@ -104,8 +121,9 @@ final class PlaySession {
         room.stop()
         saveLayout()
         pet.lastSim = Date().timeIntervalSince1970
+        pet.together = false
         AppModel.shared.pet = pet
-        Store.save(pet, force: true)
+        Store.saveFinal(pet)
         if AppModel.shared.session === self { AppModel.shared.session = nil }
         AppModel.shared.playClosed()
     }
@@ -147,7 +165,8 @@ final class PlaySession {
         for h in sc.raycast(from: a, to: b, query: .all, mask: .all, relativeTo: nil) {
             if let d = dog, under(h.entity, d.entity) { continue }
             if let c = card, under(h.entity, c) { continue }
-            if props.contains(where: { ($0.kind != .fixed || roomOnly) && under(h.entity, $0.entity) }) { continue }
+            // 손에 든 것은 빼고 (0.9: 패드를 들고 방석 위를 지나가면 강아지가 패드 위로 옮겨졌다 돌아왔음)
+            if props.contains(where: { ($0.kind != .fixed || roomOnly || $0.heldBy != nil) && under(h.entity, $0.entity) }) { continue }
             best = max(best ?? -999, h.position.y)
         }
         return best
@@ -167,20 +186,118 @@ final class PlaySession {
     func prop(_ id: String) -> Prop? { props.first { $0.id == id } }
 
     // MARK: 집 자리 (방에 고정한 기준점 — 물건 자리를 다음에도 그대로)
+    // 0.10.0 진짜 원인: 비전프로는 다시 켠 직후 고정점을 '아직 방을 다 알아보기 전의 어림 자리'로 먼저 알려 주고,
+    // 방을 알아볼수록(둘러볼수록) 고친 자리를 계속 다시 알려 줌. 0.9 까지는 처음 온 자리에 한 번 놓고 고친 자리는 무시했고,
+    // 저장할 때는 고친 자리를 기준으로 셈 → 어긋남이 저장에 그대로 들어가 켤 때마다 쌓이고(점점 한쪽으로), 시작한 곳·시선에 따라 달라졌음.
+    // 이제: 고정점이 움직이면 그 차이만큼 물건·강아지를 함께 옮기고, 자리가 멈춘 뒤에 보여 주며, 바닥 물건은 저마다 자기 고정점에 붙임
     private func anchor(_ a: WorldAnchor, _ removed: Bool) {
+        if removed { anchorM[a.id] = nil; return }
+        let pinned = propAnchor.values.contains(a.id)
         if a.id == homeId {
-            if !removed && a.isTracked {
-                // 자리만 기억함 — 놓기는 바닥을 안 뒤에 tick 이 함.
-                // (0.1.x: 여기서 바로 놓으려다 바닥을 아직 몰라 그만두고 다시 하지 않아, 두 번째 실행부터 아무것도 안 나왔음)
-                homeM = a.originFromAnchorTransform
-                canRehome = false
-            }
+            guard a.isTracked else { return }
+            let m = a.originFromAnchorTransform
+            let t = CACurrentMediaTime()
+            if homeM == nil { homeFirstAt = t; homeMovedAt = t }
+            else if let o = homeM, PlaySession.moved(m * o.inverse, 0.01) { homeMovedAt = t }
+            homeM = m
+            canRehome = false
+            if spawned { followHome() }
+        } else if pinned {
+            guard a.isTracked else { return }
+            anchorM[a.id] = a.originFromAnchorTransform
+            if spawned, let k = propAnchor.first(where: { $0.value == a.id })?.key, let p = prop(k) { followAnchor(p, a.id) }
         } else if a.id == oldHomeId {
-            // 지난 집을 늦게 찾음: 임시 집에 놓았던 것들을 원래 자리로 되돌림
-            if !removed && a.isTracked { restoreHome(a) }
-        } else if !removed && !makingHome {
-            Task { await room.removeAnchor(a.id) }
+            if a.isTracked { restoreHome(a) }
+        } else if adding == 0 && !makingHome {
+            Task { await room.removeAnchor(a.id) }          // 지난번에 쓰고 버린 고정점 정리
         }
+    }
+
+    /// 변환이 문턱보다 크게 움직였는지 (자리 mm 단위 떨림은 무시)
+    private static func moved(_ d: simd_float4x4, _ lim: Float = 0.004) -> Bool {
+        let t = SIMD3<Float>(d.columns.3.x, d.columns.3.y, d.columns.3.z)
+        let yaw = abs(atan2(d.columns.2.x, d.columns.2.z))
+        return simd_length(t) > lim || yaw > lim * 0.8
+    }
+
+    private static func yawOf(_ m: simd_float4x4) -> Float { atan2(m.columns.2.x, m.columns.2.z) }
+
+    private static func pose(_ p: SIMD3<Float>, yaw: Float) -> simd_float4x4 {
+        var m = simd_float4x4(Q.ry(yaw))
+        m.columns.3 = SIMD4<Float>(p.x, p.y, p.z, 1)
+        return m
+    }
+
+    /// 집 고정점이 고쳐짐: 그만큼 강아지·장난감·치울 것·(자기 고정점이 아직 없는) 바닥 물건을 함께 옮김
+    private func followHome() {
+        guard let m = homeM else { return }
+        guard let a = homeApplied else { homeApplied = m; return }
+        let d = m * a.inverse
+        guard PlaySession.moved(d) else { return }
+        homeApplied = m
+        let dy = PlaySession.yawOf(d)
+        let fy = room.floorY
+        for p in props where p.heldBy == nil && !p.inMouth {
+            if p.kind == .fixed, let id = propAnchor[p.id], anchorM[id] != nil { continue }
+            let w = d * SIMD4<Float>(p.pos.x, p.pos.y, p.pos.z, 1)
+            var q = SIMD3<Float>(w.x, w.y, w.z)
+            if let fy, p.kind != .toy && p.kind != .tool { q.y = fy }
+            if p.kind == .toy { p.setVelocity(.zero) }
+            p.entity.setPosition(q, relativeTo: nil)
+            p.entity.setOrientation(Q.ry(dy) * p.entity.orientation(relativeTo: nil), relativeTo: nil)
+        }
+        dog?.shift(d)
+        settleFixed()
+    }
+
+    /// 바닥 물건 하나를 자기 고정점 자리로 (강아지가 그 위에 있었으면 같이)
+    private func followAnchor(_ p: Prop, _ id: UUID) {
+        guard p.heldBy == nil, let m = anchorM[id] else { return }
+        if let ap = anchorApplied[id], !PlaySession.moved(m * ap.inverse) { return }
+        anchorApplied[id] = m
+        let fy = room.floorY ?? m.columns.3.y
+        let before = PlaySession.pose(p.pos, yaw: PlaySession.yawOf(p.entity.transformMatrix(relativeTo: nil)))
+        let on = dog.map { $0.entity.isEnabled && $0.isOn(p) } ?? false
+        let at = SIMD3<Float>(m.columns.3.x, fy, m.columns.3.z)
+        p.entity.setPosition(at, relativeTo: nil)
+        p.entity.setOrientation(Q.ry(PlaySession.yawOf(m)), relativeTo: nil)
+        settleFixed()
+        if on, let d = dog { d.shift(PlaySession.pose(p.pos, yaw: PlaySession.yawOf(m)) * before.inverse) }
+    }
+
+    /// 바닥 물건을 지금 자리에 고정 (꺼내거나 옮겨 놓았을 때). 예전 고정점은 지움
+    private func pinProp(_ p: Prop) {
+        guard p.kind == .fixed, spawned else { return }
+        let m = PlaySession.pose(SIMD3<Float>(p.pos.x, room.floorY ?? p.pos.y, p.pos.z), yaw: PlaySession.yawOf(p.entity.transformMatrix(relativeTo: nil)))
+        let key = p.id
+        let old = propAnchor[key]
+        adding += 1
+        Task {
+            let id = await room.addAnchor(m)
+            adding -= 1
+            guard let id else { return }
+            guard prop(key) != nil else { await room.removeAnchor(id); return }
+            propAnchor[key] = id
+            anchorM[id] = m
+            anchorApplied[id] = m
+            savePins()
+            if let o = old, o != id { anchorM[o] = nil; anchorApplied[o] = nil; await room.removeAnchor(o) }
+        }
+    }
+
+    private func unpinProp(_ key: String) {
+        guard let id = propAnchor[key] else { return }
+        propAnchor[key] = nil
+        anchorM[id] = nil
+        anchorApplied[id] = nil
+        savePins()
+        Task { await room.removeAnchor(id) }
+    }
+
+    private func savePins() {
+        var d: [String: String] = [:]
+        for (k, v) in propAnchor { d[k] = v.uuidString }
+        UserDefaults.standard.set(d, forKey: "af.anchors")
     }
 
     /// 임시 집 → 늦게 찾은 지난 집. 꺼내 둔 것들을 저장된 자리로 옮기고 강아지도 잠자리로
@@ -234,8 +351,14 @@ final class PlaySession {
                 if let o = old, o != id { await room.removeAnchor(o) }
             }
             homeM = m
+            homeApplied = nil
+            homeFirstAt = CACurrentMediaTime()
+            homeMovedAt = homeFirstAt
             homeNew = true
             makingHome = false
+            // 새 자리: 예전 물건 고정점은 버림 (다른 곳에 새로 놓으므로)
+            for k in Array(propAnchor.keys) { unpinProp(k) }
+            pet.layout = [:]
         }
     }
 
@@ -258,14 +381,18 @@ final class PlaySession {
             return true
         }
         if clear(want) { return want }
+        // 같은 거리라면 나와 가까운 쪽부터 (0.9 까지 늘 +x 쪽부터 찾아 자리가 한쪽으로 치우쳤음)
+        let me = SIMD2<Float>(userPos.x, userPos.z)
         var r: Float = 0.12
         while r <= within {
             let n = max(8, Int(2 * Float.pi * r / 0.12))
+            var cands: [SIMD2<Float>] = []
             for i in 0..<n {
                 let a = Float(i) / Float(n) * 2 * .pi
-                let q = want + SIMD2<Float>(cos(a), sin(a)) * r
-                if clear(q) { return q }
+                cands.append(want + SIMD2<Float>(cos(a), sin(a)) * r)
             }
+            cands.sort { simd_distance($0, me) < simd_distance($1, me) }
+            for q in cands where clear(q) { return q }
             r += 0.12
         }
         return nil
@@ -294,6 +421,8 @@ final class PlaySession {
             makeHome()
             return
         }
+        // 지난 자리: 비전프로가 방을 다시 알아보며 고정점을 고치는 동안은 기다림 (1.5초 동안 1cm 넘게 안 움직이면, 길어도 10초)
+        if !homeNew && !(now - homeMovedAt > 1.5 || now - homeFirstAt > 10) { note("지난 자리를 맞추는 중"); return }
         spawnAll()
     }
 
@@ -306,7 +435,8 @@ final class PlaySession {
 
     private func saveLayout() {
         // 임시 집인 동안은 저장하지 않음 (지난 집 기준 자리를 덮어쓰지 않게)
-        guard let m = homeM, oldHomeId == nil else { return }
+        // 물건이 실제로 따라 놓인 기준(homeApplied)으로 셈 — 기준과 저장 기준이 다르면 어긋남이 저장에 쌓임 (0.9 까지의 원인)
+        guard let m = homeApplied ?? homeM, oldHomeId == nil, spawned else { return }
         let inv = m.inverse
         let hy = atan2(m.columns.2.x, m.columns.2.z)
         var lay: [String: [Float]] = [:]
@@ -338,10 +468,29 @@ final class PlaySession {
         // 처음 놓을 때: 잠자리는 집 자리에, 나머지는 그 둘레의 빈 바닥에 하나씩
         let ring: [(Float, Float)] = [(0.5, 0), (-0.5, 0), (0.5, 0.45), (-0.5, 0.45), (0, 0.55), (0.9, 0), (-0.9, 0)]
         var k = 0
+        homeApplied = homeM
+        var repin: [Prop] = []
         for id in pet.placed {
             let p = Prop(id)
             var at = SIMD3<Float>(0, 0, 0), yaw: Float = 0
-            if let l = pet.layout[id], let w = toWorld(l) { at = w.0; yaw = w.1; if p.kind == .fixed { at.y = fy } else { at.y = max(at.y, fy) + 0.03 } }
+            if p.kind == .fixed, let aid = propAnchor[id], let m = anchorM[aid] {
+                // 자기 고정점을 이미 찾음: 그 자리 그대로
+                at = SIMD3<Float>(m.columns.3.x, fy, m.columns.3.z); yaw = PlaySession.yawOf(m)
+                anchorApplied[aid] = m
+            } else if let l = pet.layout[id], let w = toWorld(l) {
+                at = w.0; yaw = w.1
+                if p.kind == .fixed {
+                    at.y = fy
+                    // 자기 고정점이 없는 예전 자료: 집 기준 자리가 가구와 겹치면 가까운 빈 바닥으로 옮기고 새로 고정
+                    if propAnchor[id] == nil {
+                        if let q = clearSpot(near: SIMD2<Float>(at.x, at.z), half: 0.18, within: 0.8) { at.x = q.x; at.z = q.y }
+                        repin.append(p)
+                    }
+                } else {
+                    at.y = max(at.y, fy) + 0.03
+                    if let q = clearSpot(near: SIMD2<Float>(at.x, at.z), half: 0.05, within: 0.6) { at.x = q.x; at.z = q.y }
+                }
+            }
             else if id == "blanket" || id == "bed" {
                 at = base
                 yaw = atan2(-f.x, -f.z)
@@ -359,6 +508,7 @@ final class PlaySession {
             if id == "bowl_food" { p.fill = pet.foodBowl }
             if id == "bowl_water" { p.fill = pet.waterBowl }
             if id == "pad" { p.fill = 1 - Float(min(3, pet.padUses)) / 3 }
+            if p.kind == .fixed && propAnchor[id] == nil && !repin.contains(where: { $0 === p }) { repin.append(p) }
         }
         // 치우지 않은 똥: 저장된 자리 그대로. 자리가 없는 것(앱을 끈 동안 생긴 것)은 잠자리 곁의 위가 트인 빈 바닥에 한 번 정해 저장
         // (0.7.0 까지: 켤 때마다 '내 앞 1.4m' 둘레 아무 곳에 새로 놓아 매번 자리가 바뀌고 가구 밑에도 생겼음)
@@ -382,8 +532,9 @@ final class PlaySession {
         }
         settleFixed()
         loading = false
-        // 어느 길로 놓였는지 알림 (자리 문제 원인 확인용)
-        toast(homeNew ? "새 자리에 놓았어요" : "지난 자리 그대로예요")
+        spawned = true
+        for p in repin { pinProp(p) }
+        if homeNew { toast("새 자리에 놓았어요") }
         saveLayout()
     }
 
@@ -423,29 +574,48 @@ final class PlaySession {
     }
 
     // MARK: 보관함에서 꺼내기·넣기
+    /// 손에 쥐고 쓰는 것 (0.10.0: 사료 봉지·물병·새 패드·배변 봉투도 실제처럼 손에 들고 씀)
+    static let handTools: Set<String> = ["bottle", "brush", "treat", "dental", "shampoo", "foodbag", "jug", "padsheet", "bag"]
+
     /// 반환: 안 될 때 까닭
     func takeOut(_ id: String) -> String? {
         guard spawned, let fy = room.floorY else { return "공간을 알아보는 중이에요" }
         commitHome()
         let f = userFwd
-        let kindProbe = Prop(id)
-        if kindProbe.kind == .fixed || kindProbe.kind == .toy {
+        var key = id
+        var foodId = ""
+        // 보관함의 사료 = 사료 봉지, 패드 = 손에 든 새 패드 한 장, 배변 봉투 = 손에 든 봉투 한 장
+        if Catalog.item(id)?.cat == .food && id != "treat" && id != "dental" && id != "formula" { foodId = id; key = "foodbag" }
+        if id == "pad" { key = "padsheet" }
+        let kindProbe = Prop(key)
+        if key == "foodbag" {
+            if let b = prop("foodbag") { if !foodId.isEmpty { b.foodId = foodId }; return nil }
+            if foodId.isEmpty { foodId = Catalog.foodFor(pet.age()).first(where: { $0 != "formula" && pet.count($0) > 0 }) ?? "" }
+            guard !foodId.isEmpty else { return "맞는 사료가 없어요" }
+            kindProbe.foodId = foodId
+        } else if key == "padsheet" || key == "bag" {
+            guard pet.use(id) else { return id == "bag" ? "배변 봉투가 없어요" : "패드가 없어요" }
+        } else if kindProbe.kind == .fixed || kindProbe.kind == .toy {
             if pet.placed.contains(id) { return "이미 꺼내 두었어요" }
-            if id == "pad" { guard pet.use("pad") else { return "패드가 없어요" }; pet.padUses = 3 }
             pet.placed.append(id)
         } else if id == "treat" || id == "dental" {
             guard pet.use(id) else { return "남은 것이 없어요" }
-        } else if props.contains(where: { $0.id == id }) { return "이미 꺼내 두었어요" }
+        } else if props.contains(where: { $0.id == key }) { return "이미 꺼내 두었어요" }
         // 손에 쥘 것은 오른손 앞 아래에 (0.5.0: 바로 앞 가슴 높이라 강아지 위 카드와 겹쳐 보였음)
+        // 손이 보이면 그 손 바로 위에 띄워 잡기 쉽게 (0.9: 작은 간식을 공중에서 잡기 어려웠음)
         var at = userPos + f * 0.42 + SIMD3<Float>(-f.z, 0, f.x) * 0.2
         at.y = max(fy + 0.1, userPos.y - 0.5)
+        if kindProbe.kind == .tool, let h = room.hands.first(where: { $0.seen && $0.right }) ?? room.hands.first(where: { $0.seen }),
+           simd_distance(h.palm, userPos) < 0.75 {
+            at = h.palm + SIMD3<Float>(0, 0.07, 0) + f * 0.03
+        }
         if kindProbe.kind == .fixed {
             let want = SIMD2<Float>(userPos.x + f.x * 0.8, userPos.z + f.z * 0.8)
             let q = clearSpot(near: want, half: 0.22, within: 1.0) ?? want
             at = SIMD3<Float>(q.x, fy, q.y)
         }
         add(kindProbe, at: at, yaw: atan2(-f.x, -f.z))
-        if kindProbe.kind == .fixed { settleFixed() }
+        if kindProbe.kind == .fixed { settleFixed(); pinProp(kindProbe) }
         if kindProbe.kind == .tool { kindProbe.setMode(.kinematic) }       // 손에 쥘 것은 집을 때까지 내 앞에 떠 있음
         saveLayout()
         if id == "bowl_food" { kindProbe.fill = pet.foodBowl }
@@ -456,11 +626,21 @@ final class PlaySession {
 
     func putBack(_ id: String) {
         commitHome()
-        for p in props.filter({ $0.id == id }) {
-            if id == "treat" || id == "dental" { pet.inv[id] = pet.count(id) + 1 }
+        var keys = [id]
+        if Catalog.item(id)?.cat == .food && id != "treat" && id != "dental" { keys = ["foodbag"] }
+        if id == "pad" { keys = ["pad", "padsheet"] }
+        if id == "bag" { keys = ["bag"] }
+        for p in props.filter({ keys.contains($0.id) }) {
+            if ["treat", "dental"].contains(p.id) || (p.id == "padsheet" && !p.used) || (p.id == "bag" && !p.used) {
+                let inv = p.id == "padsheet" ? "pad" : p.id
+                pet.inv[inv] = pet.count(inv) + 1
+            }
             removeProp(p)
         }
-        pet.placed.removeAll { $0 == id }
+        if keys.contains("pad") || Catalog.placeable.contains(id) {
+            pet.placed.removeAll { $0 == id }
+            unpinProp(id)
+        }
         if id == "pad" { pet.padUses = 0 }
         saveLayout()
         publish()
@@ -494,26 +674,43 @@ final class PlaySession {
     // MARK: 누르기 (멀리서 바라보고 집기)
     /// 강아지를 바라보고 집기 → 메뉴 카드.
     /// 쓰다듬기·안기처럼 손이 강아지에 닿아 생긴 탭은 무시 (0.4.0: 만질 때마다 카드가 떴음 — 손가락이 몸에 닿는 것도 시스템이 탭으로 보냄)
-    func tapDog() {
+    func tapDog(at w: SIMD3<Float>? = nil) {
         guard now - lastGrabAt > 0.7, let d = dog else { return }
-        if d.holding || d.touching || now - d.lastTouchAt < 1.5 { return }
-        let c = d.bodyWorld
-        let reach: Float = 0.12 + 0.2 * d.entity.scale.x
-        for h in room.hands where h.seen {
-            if simd_distance(h.palm, c) < reach + 0.1 || simd_distance(h.index, c) < reach + 0.06 { return }
-        }
+        if d.holding { return }
+        // 손가락이 실제로 닿은 자리에서 온 탭(쓰다듬기)만 거름. 바라보고 집은 탭은 손이 강아지 곁에 있어도 받음
+        // (0.9 까지: 손이 강아지 몸 30cm 안에만 있어도 탭을 버려서, 가까이 있으면 카드가 절대 안 떴음)
+        if let w { if touchedDirectly(w) { return } }
+        else if d.touching || now - d.lastTouchAt < 1.5 { return }
+        if !cardOn && AppModel.shared.mainOpen { AppModel.shared.closeMain?() }     // 메뉴는 늘 하나만
         cardOn.toggle()
         cardUntil = now + 15
+        ringInfo = nil
+    }
+
+    /// 탭 자리에 손가락·손바닥이 닿아 있음 = 직접 만진 것
+    private func touchedDirectly(_ w: SIMD3<Float>) -> Bool {
+        for h in room.hands where h.seen {
+            if simd_distance(h.index, w) < 0.04 || simd_distance(h.thumb, w) < 0.04 || simd_distance(h.middle, w) < 0.04 || simd_distance(h.palm, w) < 0.06 { return true }
+        }
+        return false
+    }
+
+    /// 카드의 고리를 보고 집음: 그 욕구의 지금 상태와 앞으로 (아이폰·메인 메뉴와 같은 글)
+    var ringInfo: String?
+    func showRing(_ key: String) {
+        cardUntil = now + 15
+        let t = NeedInfo.text(pet, key)
+        ringInfo = ringInfo == t ? nil : t
     }
 
     // MARK: 강아지 메뉴 (강아지를 누르면 뜨는 카드의 단추)
     func closeCard() { cardOn = false }
 
-    /// 밥 주기: 젖먹이는 젖병을 꺼내 주고, 그 뒤로는 밥그릇에 사료를 담음. 없는 것이 있으면 상점을 엶
+    /// 밥 주기: 젖먹이는 젖병, 그 뒤로는 사료 봉지를 손 앞에 꺼내 줌 → 봉지를 들고 그릇 위에서 기울이면 사료가 쏟아짐 (0.10.0)
     func feed() {
         cardUntil = now + 12
         let age = pet.age()
-        if age < 21 {
+        if age < Catalog.weanAge && !(age >= 21 && pet.has("bowl_food") && Catalog.foodFor(age).contains(where: { $0 != "formula" && pet.count($0) > 0 })) {
             guard pet.has("bottle"), pet.count("formula") > 0 || pet.bottle > 0.01 else { AppModel.shared.showMain(tab: 2, note: "젖병과 분유가 필요해요"); return }
             if !isOut("bottle"), let why = takeOut("bottle") { toast(why); return }
             toast("젖병을 집어 입에 대 주세요")
@@ -522,18 +719,21 @@ final class PlaySession {
         guard pet.has("bowl_food") else { AppModel.shared.showMain(tab: 2, note: "밥그릇이 필요해요"); return }
         guard Catalog.foodFor(age).contains(where: { $0 != "formula" && pet.count($0) > 0 }) else { AppModel.shared.showMain(tab: 2, note: "맞는 사료가 없어요"); return }
         if !isOut("bowl_food"), let why = takeOut("bowl_food") { toast(why); return }
-        if let b = prop("bowl_food") { useProp(b) }
+        if !isOut("foodbag"), let why = takeOut("foodbag") { toast(why); return }
+        toast("봉지를 집어 밥그릇 위에서 기울여 주세요")
     }
 
     func giveWater() {
         cardUntil = now + 12
         if pet.age() < 21 { toast("아직 젖만 먹어요"); return }
         if !isOut("bowl_water"), let why = takeOut("bowl_water") { toast(why); return }
-        if let b = prop("bowl_water") { useProp(b) }
+        if !isOut("jug"), let why = takeOut("jug") { toast(why); return }
+        toast("물병을 집어 물그릇 위에서 기울여 주세요")
     }
 
-    func tapProp(_ e: Entity) {
+    func tapProp(_ e: Entity, at w: SIMD3<Float>? = nil) {
         guard now - lastGrabAt > 0.7 else { return }
+        if let w, touchedDirectly(w) { return }
         var x: Entity? = e
         var uid = ""
         while let c = x { if let t = c.components[PropTag.self] { uid = t.id; break }; x = c.parent }
@@ -541,39 +741,14 @@ final class PlaySession {
         useProp(p)
     }
 
+    /// 바라보고 집기: 그릇은 봉지·물병을 꺼내 주고, 치울 것·패드는 어떻게 하는지 알려 줌 (바로 사라지거나 차지 않음 — 0.10.0)
     private func useProp(_ p: Prop) {
-        let age = pet.age()
         switch p.id {
-        case "bowl_food":
-            if p.fill > 0.9 { return }
-            guard let fid = Catalog.foodFor(age).first(where: { $0 != "formula" && pet.count($0) > 0 }) else {
-                toast(age < 21 ? "아직 젖병으로 먹어요" : "맞는 사료가 없어요")
-                return
-            }
-            _ = pet.use(fid)
-            pet.foodKind = fid
-            pet.foodBowl = 1
-            p.fill = 1
-            SoundBank.shared.play("kibble", on: p.entity, gain: -8)
-        case "bowl_water":
-            if p.fill > 0.95 { return }
-            pet.waterBowl = 1
-            p.fill = 1
-            SoundBank.shared.play("water", on: p.entity, gain: -10)
-        case "pad":
-            if p.fill < 0.3 { return }
-            if pet.use("pad") { p.fill = 0; pet.padUses = 3; SoundBank.shared.play("rustle", on: p.entity, gain: -12) }
-            else { toast("새 패드가 없어요"); if p.fill >= 0.99 { pet.placed.removeAll { $0 == "pad" }; removeProp(p) } }
-        case "poop":
-            guard pet.use("bag") else { toast("배변 봉투가 필요해요"); return }
-            pet.poops = max(0, pet.poops - 1)
-            pet.clean = min(1, pet.clean + 0.02)
-            SoundBank.shared.play("rustle", on: p.entity, gain: -12)
-            removeProp(p)
-            saveLayout()
-        case "pee":
-            SoundBank.shared.play("rustle", on: p.entity, gain: -14)
-            removeProp(p)
+        case "bowl_food": feed()
+        case "bowl_water": giveWater()
+        case "pad": toast(pet.count("pad") > 0 ? "보관함에서 새 패드를 꺼내 바닥에 깔면 갈아져요" : "새 패드가 없어요 · 상점에서 살 수 있어요")
+        case "poop": toast(pet.count("bag") > 0 || isOut("bag") ? "배변 봉투를 들고 집어 주세요" : "배변 봉투가 필요해요")
+        case "pee": toast(pet.count("pad") > 0 || isOut("padsheet") ? "패드를 한 장 꺼내 들고 닦아 주세요" : "닦을 패드가 필요해요")
         default: break
         }
         publish()
@@ -612,9 +787,31 @@ final class PlaySession {
             if p.id == "bowl_food" || p.id == "bowl_water" { ex.append((SIMD2<Float>(p.pos.x, p.pos.z), 0.09)) }
             else if p.id == "steps" { ex.append((SIMD2<Float>(p.pos.x, p.pos.z), 0.28)) }
         }
+        // 내 몸: 스캔 그물에 사람은 안 잡히므로 머리 자리로 몸이 차지한 바닥을 어림 (0.9: 강아지가 내 몸을 뚫고 와 앉았음).
+        // 서 있으면 발 둘레, 앉아 있으면(눈높이 1.25m 아래) 다리가 앞으로 뻗은 자리까지
+        if let fy = room.floorY {
+            let u = SIMD2<Float>(userPos.x, userPos.z), f2 = SIMD2<Float>(userFwd.x, userFwd.z)
+            let sitting = userPos.y - fy < 1.25
+            ex.append((u, 0.24))
+            if sitting { for k in 1...3 { ex.append((u + f2 * (0.2 * Float(k)), 0.2)) } }
+            else { ex.append((u + f2 * 0.12, 0.2)) }
+        }
         room.nav.extra = ex
+        // 가림 그물: 강아지를 안거나 아주 가까이 있을 때는 끔 — 내 몸·다리가 스캔돼 생긴 가림 면이 강아지 몸을 잘라
+        // 속의 눈·혀만 보였음 (0.9)
+        if let d = dog {
+            let near = d.holding || d.touching || simd_distance(d.bodyWorld, userPos) < 0.75
+            if room.occlusion == near { room.occlusion = !near }
+        }
         live(dt)
         hands(dt)
+        toolsWork(dt)
+        if now > beatAt {
+            // 함께 있다는 표시를 20분마다 다시 올림 (아이폰은 이 표시가 2시간 넘게 안 오면 다시 알림을 울림)
+            beatAt = now + 1200
+            pet.lastSim = Date().timeIntervalSince1970
+            Store.save(pet, force: true)
+        }
         dog?.tick(dt)
         let hold = dog?.holding ?? false
         if hold != holding { holding = hold }
@@ -706,7 +903,7 @@ final class PlaySession {
         pet.food = c(pet.food - d.food * h * k)
         pet.water = c(pet.water - d.water * h * k * (active > 1 ? 2 : 1))
         pet.potty = c(pet.potty - d.potty * h * k)
-        pet.energy = c(pet.energy + (sleeping ? 0.22 : -0.06 * active) * h)
+        pet.energy = c(pet.energy + (sleeping ? 0.22 : -st.awakeDrain * active) * h)
         if !sleeping { pet.fun = c(pet.fun - d.fun * h); pet.love = c(pet.love - d.love * h * 0.5) }
         pet.clean = c(pet.clean - 0.004 * h)
         if pet.food < 0.08 || (pet.water < 0.08 && d.water > 0) { pet.health = max(0.25, pet.health - 0.02 * h) } else { pet.health = min(1, pet.health + 0.012 * h) }
@@ -749,7 +946,8 @@ final class PlaySession {
                 var best: Prop?
                 var bd: Float = 9
                 for p in props where p.kind != .mess && p.heldBy == nil && !p.inMouth {
-                    var lim: Float = 0.035
+                    // 작은 것(간식·덴탈 껌·공)은 손이 조금 빗나가도 잡히게 (0.9: 공중에 뜬 간식을 잡기 어려웠음)
+                    var lim: Float = p.small ? 0.055 : 0.035
                     var gp = h.fist ? h.palm : h.grip
                     if p.kind == .fixed {
                         if !h.pinch || petting { continue }
@@ -807,10 +1005,22 @@ final class PlaySession {
                 settleFixed()
                 SoundBank.shared.play("thump", on: p.entity, gain: -22)
                 commitHome()
-                saveLayout()                 // 옮겨 놓은 자리가 그대로 집이 됨
+                pinProp(p)                   // 옮겨 놓은 자리에 새로 고정 (다음에도 그 자리 그대로)
+                saveLayout()
                 Store.save(pet)
             }
             return
+        }
+        p.showStream(nil, nil, water: false)
+        if p.id == "padsheet" || p.id == "bag" {
+            if p.used {
+                // 닦은 패드·채운 봉투는 묶어서 버림
+                SoundBank.shared.play("rustle", on: p.entity, gain: -14)
+                removeProp(p)
+                publish()
+                return
+            }
+            if p.id == "padsheet" && p.pos.y - fy < 0.3 { layPad(p); return }
         }
         p.setMode(.dynamic)
         var v = h.seen ? h.vel : SIMD3<Float>(0, 0, 0)
@@ -819,6 +1029,119 @@ final class PlaySession {
         p.setVelocity(v, spin: SIMD3<Float>(Float.random(in: -3...3), Float.random(in: -3...3), Float.random(in: -3...3)) * min(1, sp))
         p.thrownAt = now
         if p.kind == .toy { if sp > 1.1 { dog?.thrown(p) } else { dog?.noticed(p) } }      // 던지면 쫓아가고, 곁에 내려놓으면 다가와 봄
+    }
+
+    // MARK: 손에 든 도구 (0.10.0) — 봉지·물병을 그릇 위에서 기울여 붓기, 패드로 오줌 닦기, 봉투로 똥 줍기
+    private func toolsWork(_ dt: Float) {
+        let fy = room.floorY ?? 0
+        for p in props where p.heldBy != nil {
+            switch p.id {
+            case "foodbag", "jug": pour(p, dt)
+            case "padsheet": wipe(p, dt, fy)
+            case "bag": scoop(p)
+            default: break
+            }
+        }
+    }
+
+    private func pour(_ p: Prop, _ dt: Float) {
+        let water = p.id == "jug"
+        let up = p.entity.convert(direction: SIMD3<Float>(0, 1, 0), to: nil)
+        let tilt = acos(min(1, max(-1, up.y)))
+        let mouth = p.entity.convert(position: p.spout, to: nil)
+        var bowl: Prop?
+        // 입구가 아래로 기울고(물병 60°·봉지 65° 넘게) 그 바로 아래에 그릇이 있을 때만 쏟아짐
+        if tilt > (water ? 1.05 : 1.13), let b = prop(water ? "bowl_water" : "bowl_food"), b.heldBy == nil {
+            let dxz = simd_distance(SIMD2<Float>(mouth.x, mouth.z), SIMD2<Float>(b.pos.x, b.pos.z))
+            let h = mouth.y - b.pos.y
+            if dxz < 0.08 && h > 0.03 && h < 0.7 { bowl = b }
+        }
+        guard let b = bowl, b.fill < 0.999 else {
+            p.showStream(nil, nil, water: water)
+            if bowl == nil { tools.fullTold = false }
+            return
+        }
+        if water {
+            b.fill = min(1, b.fill + dt * 0.42)
+            pet.waterBowl = b.fill
+        } else {
+            if tools.credit <= 0.0001 {
+                let fid = !p.foodId.isEmpty && pet.count(p.foodId) > 0 ? p.foodId : (Catalog.foodFor(pet.age()).first(where: { $0 != "formula" && pet.count($0) > 0 }) ?? "")
+                guard !fid.isEmpty, pet.use(fid) else { p.showStream(nil, nil, water: false); tell("사료가 다 떨어졌어요"); return }
+                pet.foodKind = fid
+                tools.credit = 1                       // 한 끼 = 빈 그릇 하나 가득
+            }
+            let add = min(1 - b.fill, dt * 0.5, tools.credit)
+            b.fill += add
+            tools.credit -= add
+            pet.foodBowl = b.fill
+        }
+        p.showStream(mouth, SIMD3<Float>(b.pos.x, b.pos.y + b.contentY, b.pos.z), water: water)
+        if now > tools.soundAt {
+            tools.soundAt = now + (water ? 1.1 : 0.55)
+            SoundBank.shared.play(water ? "pour" : "kibble", on: b.entity, gain: water ? -12 : -10)
+        }
+        if b.fill >= 0.999 && !tools.fullTold { tools.fullTold = true; tell(water ? "물을 가득 채웠어요" : "사료를 가득 담았어요") }
+        dog?.foodComing(b)
+    }
+
+    /// 손에 든 새 패드를 오줌 위에 대고 문지르면 닦임
+    private func wipe(_ p: Prop, _ dt: Float, _ fy: Float) {
+        guard !p.used, let i = p.heldBy else { return }
+        let c = SIMD2<Float>(p.pos.x, p.pos.z)
+        guard let pee = props.first(where: { $0.id == "pee" && simd_distance(SIMD2<Float>($0.pos.x, $0.pos.z), c) < 0.13 }), p.pos.y - fy < 0.08 else {
+            tools.wipeT = max(0, tools.wipeT - dt)
+            return
+        }
+        if simd_length(room.hands[i].vel) > 0.05 { tools.wipeT += dt }
+        pee.fill = max(0, 1 - tools.wipeT / 1.3)
+        if now > tools.soundAt { tools.soundAt = now + 0.45; SoundBank.shared.play("brush", on: p.entity, gain: -16) }
+        if tools.wipeT > 1.3 {
+            tools.wipeT = 0
+            removeProp(pee)
+            p.used = true
+            pet.clean = min(1, pet.clean + 0.02)
+            tell("깨끗이 닦았어요")
+            publish()
+        }
+    }
+
+    /// 손에 든 배변 봉투를 똥에 대면 주워 담음 (봉투를 놓으면 묶어서 버림)
+    private func scoop(_ p: Prop) {
+        guard let poop = props.first(where: { $0.id == "poop" && $0.grabDist(p.pos) < 0.055 }) else { return }
+        removeProp(poop)
+        pet.poops = max(0, pet.poops - 1)
+        pet.clean = min(1, pet.clean + 0.02)
+        p.used = true
+        SoundBank.shared.play("rustle", on: p.entity, gain: -12)
+        saveLayout()
+        publish()
+    }
+
+    /// 손에 든 새 패드를 바닥 가까이에서 놓음 → 그 자리에 깔림 (깔려 있던 패드는 걷어 냄)
+    private func layPad(_ sheet: Prop) {
+        let fy = room.floorY ?? sheet.pos.y
+        let at = SIMD3<Float>(sheet.pos.x, fy, sheet.pos.z)
+        let yaw = PlaySession.yawOf(sheet.entity.transformMatrix(relativeTo: nil))
+        removeProp(sheet)
+        if let old = prop("pad") { removeProp(old) } else { pet.placed.append("pad") }
+        let pad = Prop("pad")
+        add(pad, at: at, yaw: yaw)
+        pad.fill = 0
+        pet.padUses = 3
+        settleFixed()
+        pinProp(pad)
+        SoundBank.shared.play("rustle", on: pad.entity, gain: -12)
+        saveLayout()
+        Store.save(pet)
+        publish()
+    }
+
+    @ObservationIgnored private var tellAt: Double = 0
+    private func tell(_ t: String) {
+        guard now > tellAt else { return }
+        tellAt = now + 4
+        toast(t)
     }
 
     // MARK: 산책·거품

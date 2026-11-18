@@ -66,6 +66,13 @@ enum Stage: Int, CaseIterable {
         }
     }
 
+    /// 깨어 있을 때 시간당 줄어드는 기운: 하루 중 자는 비율(sleepShare)에 맞게 — 밤잠(8시간)을 뺀 낮 동안 그 비율만큼 낮잠을 잠.
+    /// (0.9 까지는 모든 나이가 시간당 0.06 이라, 7주 강아지도 낮에 13시간을 깨어 있어 하루 대부분 멀쩡했음)
+    var awakeDrain: Float {
+        let day = max(0.08, min(0.8, (sleepShare * 24 - 8) / 16))
+        return 0.22 * day / (1 - day)
+    }
+
     /// 한 끼에 차는 양
     var meal: Float {
         switch self {
@@ -106,6 +113,7 @@ struct PetState: Codable, Equatable {
     var walkDay = ""
     var meals = 0
     var bottle: Float = 0                                            // 젖병에 타 둔 분유 (1회분 = 1)
+    var together = false                                             // 비전에서 함께하는 중 (아이폰은 이 동안 알림을 멈춤)
 
     init() {}
 
@@ -123,7 +131,7 @@ struct PetState: Codable, Equatable {
         poops = g(.poops, z.poops); padUses = g(.padUses, z.padUses); vaccines = g(.vaccines, z.vaccines)
         checkupAge = g(.checkupAge, z.checkupAge); jointUntil = g(.jointUntil, z.jointUntil); asleep = g(.asleep, z.asleep)
         walkM = g(.walkM, z.walkM); walkDay = g(.walkDay, z.walkDay); meals = g(.meals, z.meals)
-        bottle = g(.bottle, z.bottle)
+        bottle = g(.bottle, z.bottle); together = g(.together, z.together)
     }
 
     // MARK: 나이
@@ -177,23 +185,28 @@ struct PetState: Codable, Equatable {
             food = PetState.clamp(food - d.food * h * k)
             water = PetState.clamp(water - d.water * h * k)
             potty = PetState.clamp(potty - d.potty * h * k)
-            energy = PetState.clamp(energy + (sleeping ? 0.22 : -0.06) * h)
+            energy = PetState.clamp(energy + (sleeping ? 0.22 : -st.awakeDrain) * h)
             if !sleeping {
                 fun = PetState.clamp(fun - d.fun * h)
                 love = PetState.clamp(love - d.love * h)
             }
             clean = PetState.clamp(clean - 0.004 * h)
-            if !sleeping {
-                // 그릇에 남은 밥·물 (젖먹이는 혼자 못 먹음)
-                if st.rawValue >= Stage.social.rawValue {
-                    if food < 0.45, foodBowl > 0.05 { food = PetState.clamp(food + st.meal * foodBowl); foodBowl = 0; meals += 1; potty = PetState.clamp(potty - 0.2) }
-                    if water < 0.5, waterBowl > 0.05 { water = PetState.clamp(water + 0.6); waterBowl = max(0, waterBowl - 0.34) }
+            // 그릇에 남은 밥·물: 배고프거나 목마르면 자다가도(밤에도) 일어나 먹고 마심. 필요한 만큼만 먹고 남김 (젖먹이는 혼자 못 먹음)
+            // (0.9: 자는 동안엔 먹지 않아, 밤새 그릇이 가득한데 배고프다는 알림이 왔음 / 한 번 먹으면 그릇을 통째로 비웠음)
+            if st.rawValue >= Stage.social.rawValue {
+                if food < (sleeping ? 0.3 : 0.45), foodBowl > 0.05 {
+                    let take = min(foodBowl, (1 - food) / st.meal)
+                    food = PetState.clamp(food + st.meal * take); foodBowl = max(0, foodBowl - take); meals += 1; potty = PetState.clamp(potty - 0.2)
                 }
-                if potty < 0.12 {
-                    potty = 1
-                    if padUses > 0 { padUses -= 1; if padUses == 0, use("pad") { padUses = 3 } }
-                    else { poops = min(3, poops + 1); clean = PetState.clamp(clean - 0.05) }
+                if water < (sleeping ? 0.3 : 0.5), waterBowl > 0.05 {
+                    let take = min(waterBowl, 0.34)
+                    water = PetState.clamp(water + 0.6 * take / 0.34); waterBowl = max(0, waterBowl - take)
                 }
+            }
+            if potty < 0.12 {
+                potty = 1
+                if padUses > 0 { padUses -= 1; if padUses == 0, use("pad") { padUses = 3 } }
+                else { poops = min(3, poops + 1); clean = PetState.clamp(clean - 0.05) }
             }
             if food < 0.08 || (water < 0.08 && d.water > 0) { health = max(0.25, health - 0.02 * h) }
             else { health = min(1, health + 0.012 * h) }
@@ -270,6 +283,12 @@ enum Store {
         CloudSync.push(p, data: d, force: force)           // 아이폰 앱을 바로 깨워 알림을 다시 맞추게 (Cloud.swift)
     }
 
+    /// 공간을 닫거나 앱이 뒤로 갈 때: 저장 + 아이클라우드에 바로 올림 (앱이 멈추기 전에 올라가도록 시간을 빌려서)
+    static func saveFinal(_ p: PetState) {
+        save(p, force: true)
+        NSUbiquitousKeyValueStore.default.synchronize()
+    }
+
     static func clear() {
         try? FileManager.default.removeItem(at: file)
         try? FileManager.default.removeItem(at: dir.appendingPathComponent("pet.bak.json"))
@@ -337,6 +356,8 @@ enum Catalog {
         Item(id: "joint", name: "관절 영양제", cat: .health, price: 300, qty: 1, unit: "달", icon: "pills.fill", note: "7살부터 · 한 달", ageMin: 2400),
     ]
     static func item(_ id: String) -> Item? { items.first { $0.id == id } }
+    /// 젖떼기: 이 나이(생후 5주)부터는 젖병을 먹지 않음 (분유는 4주까지, 3~5주는 젖병과 사료를 함께)
+    static let weanAge: Double = 35
     /// 공간에 꺼내 놓는 것
     static let placeable: Set<String> = ["bowl_food", "bowl_water", "blanket", "bed", "pad", "ball", "rope", "squeak", "chewbone", "blanky", "steps"]
     static let toys: [String] = ["ball", "rope", "squeak", "chewbone", "blanky"]
@@ -346,5 +367,104 @@ enum Catalog {
         if age < 330 { return ["food_puppy"] }
         if age < 2555 { return ["food_adult", "food_adult_l", "food_puppy"] }
         return ["food_senior", "food_adult", "food_adult_l"]
+    }
+}
+
+// MARK: - 욕구 고리 설명 (비전 카드·메인 메뉴·아이폰에서 고리를 누르면 같은 글)
+enum NeedInfo {
+    static func key(_ label: String) -> String {
+        ["밥": "food", "물": "water", "기운": "energy", "배변": "potty", "놀이": "fun", "사랑": "love", "청결": "clean", "건강": "health"][label] ?? label
+    }
+
+    /// 앞으로 처음 그렇게 되는 때 (10분씩 흘려 봄, 최대 하루). 지금 이미 그러면 0
+    static func first(_ p0: PetState, within h: Double = 24, _ f: (PetState) -> Bool) -> Double? {
+        if f(p0) { return 0 }
+        var p = p0
+        let now = Date().timeIntervalSince1970
+        var t = now
+        while t < now + h * 3600 {
+            t += 600
+            p.catchUp(t)
+            if f(p) { return t - now }
+        }
+        return nil
+    }
+
+    static func later(_ sec: Double) -> String {
+        if sec < 50 * 60 { return "\(max(10, Int(sec / 600) * 10))분쯤 뒤" }
+        let h = sec / 3600
+        if h < 10 { return "\(Int(h.rounded()))시간쯤 뒤" }
+        let d = Date(timeIntervalSince1970: Date().timeIntervalSince1970 + sec)
+        let c = Calendar.current.dateComponents([.hour], from: d)
+        let today = Calendar.current.isDateInToday(d)
+        return (today ? "오늘 " : "내일 ") + "\(c.hour ?? 0)시쯤"
+    }
+
+    /// 다음 예방 접종 때 (생후 6·9·12주, 그 뒤 해마다)
+    static func nextVaccine(_ n: Int) -> Double {
+        let early: [Double] = [42, 63, 84]
+        return n < 3 ? early[n] : 84 + 365 * Double(n - 2)
+    }
+
+    static func text(_ p: PetState, _ key: String) -> String {
+        let age = p.age()
+        let st = Stage.of(age)
+        let grown = st.rawValue >= Stage.social.rawValue
+        switch key {
+        case "food":
+            if age < 21 {
+                if p.food < 0.3 { return "젖을 찾아요 · 젖병을 입에 대 주세요" }
+                if let t = first(p, { $0.food < 0.3 }) { return "배불러요 · \(later(t)) 다시 젖을 찾아요" }
+                return "배불러요"
+            }
+            let bowl = p.foodBowl
+            let b = bowl > 0.7 ? "그릇에 사료가 넉넉해요" : (bowl > 0.05 ? "그릇에 사료가 조금 남았어요" : "밥그릇이 비었어요")
+            if p.food < 0.25 { return bowl > 0.05 ? "배고파요 · 그릇에 사료가 있어 곧 먹을 거예요" : "배고파요 · 밥그릇에 사료를 부어 주세요" }
+            if let t = first(p, { $0.food < 0.25 }) { return "\(b) · \(later(t)) 배고파해요" }
+            return bowl > 0.05 ? "\(b) · 배고프면 알아서 먹어요" : "\(b) · 하루 안엔 괜찮아요"
+        case "water":
+            if !grown || age < 21 { return "아직 젖만 먹어요" }
+            let bowl = p.waterBowl
+            let b = bowl > 0.6 ? "물그릇에 물이 넉넉해요" : (bowl > 0.05 ? "물이 조금 남았어요" : "물그릇이 비었어요")
+            if p.water < 0.25 { return bowl > 0.05 ? "목말라요 · 곧 마실 거예요" : "목말라요 · 물그릇에 물을 부어 주세요" }
+            if let t = first(p, { $0.water < 0.25 }) { return "\(b) · \(later(t)) 목말라해요" }
+            return "\(b) · 목마르면 알아서 마셔요"
+        case "energy":
+            if p.asleep {
+                if let t = first(p, { !$0.asleep }) { return "자는 중이에요 · \(later(t)) 깨요" }
+                return "자는 중이에요"
+            }
+            if let t = first(p, { $0.asleep }) { return "기운이 \(p.energy > 0.6 ? "넘쳐요" : "조금 빠졌어요") · \(later(t)) 자요" }
+            return "깨어 있어요"
+        case "potty":
+            var a: [String] = []
+            if p.placed.contains("pad") { a.append(p.padUses > 0 ? "패드가 깔려 있어요 (\(p.padUses)번 더)" : "패드가 가득 찼어요 · 새 패드로 갈아 주세요") }
+            else { a.append("패드가 없어 바닥에 실수할 수 있어요") }
+            if p.poops > 0 { a.append("치울 똥이 \(p.poops)개 있어요") }
+            if p.potty < 0.3 { a.append("곧 볼일을 봐요") }
+            a.append("패드에서 볼 때마다 배변 훈련 \(Int(p.train * 100))%")
+            return a.joined(separator: " · ")
+        case "fun":
+            if !grown { return "아직 놀기엔 어려요" }
+            if p.fun < 0.25 { return "심심해해요 · 장난감을 던지거나 놀아 주세요" }
+            if let t = first(p, { $0.fun < 0.25 }) { return "신나요 · \(later(t)) 심심해해요" }
+            return "신나요"
+        case "love":
+            if p.love < 0.25 { return "보고 싶어 해요 · 쓰다듬거나 안아 주세요" }
+            if let t = first(p, { $0.love < 0.25 }) { return "사랑받고 있어요 · \(later(t)) 보고 싶어 해요" }
+            return "사랑받고 있어요"
+        case "clean":
+            let lv = p.clean > 0.7 ? "깨끗해요" : (p.clean > 0.4 ? "조금 꼬질꼬질해요" : "많이 더러워요")
+            return age < 56 ? lv : "\(lv) · 빗질·거품 샴푸로 깨끗해져요"
+        default:
+            var a: [String] = [p.health > 0.7 ? "건강해요" : (p.health > 0.4 ? "기운이 없어요" : "아파요 · 밥·물을 챙겨 주세요")]
+            if age >= 35 {
+                let due = nextVaccine(p.vaccines)
+                if age >= due { a.append("예방 접종을 맞힐 때예요 (\(p.vaccines)번 맞음)") }
+                else { a.append("다음 접종 \(PetState.ageText(due)) · \(later((due - age) / Sim.ageRate * 86400))") }
+            }
+            if age >= 180 && (p.checkupAge < 0 || age - p.checkupAge >= 365) { a.append("건강 검진을 받을 때예요") }
+            return a.joined(separator: " · ")
+        }
     }
 }

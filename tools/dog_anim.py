@@ -128,8 +128,10 @@ SIDE = S(dy=-.108, roll=1.42, dx=-.02, sp=(0, 0, 0), nk=(.1, 0, -.1), hd=(.1, 0,
          FL=('a', -.75, .12, .5, .3), FR=('a', -.55, -.22, .7, .3), HL=('a', -.55, .12, .5, -.2), HR=('a', -.35, -.22, .6, -.2))
 CURL = S(DOWN, dy=-.103, roll=.35, sp=(.1, .55, 0), ch=(.1, .45, 0), nk=(.45, .75, 0), hd=(.3, .5, .2), tail=(-.6, .3), lid=1, wag=0,
          HL=(.03, .014, .12, -1.3), HR=(.0, .014, .09, -1.3))
-BELLY = S(dy=-.106, roll=3.05, nk=(-.2, 0, 0), hd=(-.25, 0, .3), tail=(-.6, -.6), ear=(.5, 0),
-          FL=('a', -.7, .3, 1.5, .9), FR=('a', -.9, .3, 1.6, .9), HL=('a', -.9, .5, -1.3, .6), HR=('a', -.7, .5, -1.4, .6))
+# 배 보이기 (0.10.0): 완전히 뒤집혀 목을 세운 채 버티던 자세(0.9) → 등을 대고 한쪽으로 살짝 기운 채 몸을 C자로 휘고,
+# 머리는 옆얼굴을 바닥에 툭 내려놓고, 앞발은 가슴 위로 접고, 뒷다리는 벌려 무릎을 굽힘 (실제 강아지가 배를 내보이며 늘어진 모습)
+BELLY = S(dy=-.106, roll=2.6, sp=(0, .22, 0), ch=(0, .16, 0), nk=(-.55, .25, -.35), hd=(-.25, .2, -.7), tail=(-.6, -.4), ear=(.6, .2), jaw=.12, tongue=.3, lid=.35, wag=.3,
+          FL=('a', -1.15, .25, 1.9, 1.3), FR=('a', -1.4, .2, 2.0, 1.2), HL=('a', -.6, .9, -1.5, .9), HR=('a', -.45, .7, -1.6, .8))
 BOW = S(pitch=.42, dy=-.012, dz=-.01, sp=(-.1, 0, 0), ch=(-.1, 0, 0), nk=(-.45, 0, 0), hd=(.05, 0, 0), tail=(.25, .1), wag=1,
         FL=(.012, .014, .10, -1.3), FR=(.012, .014, .10, -1.3))
 BEG = S(SIT, dy=-.082, pitch=-1.2, dz=.055, sp=(.1, 0, 0), ch=(.25, 0, 0), nk=(.45, 0, 0), hd=(.5, 0, 0),
@@ -315,6 +317,14 @@ clip("dig", [(0, S(BOW, pitch=.3, wag=.5, nk=(.2, 0, 0), hd=(.3, 0, 0))), (1.2, 
 hold("sniff_ground", S(pitch=.12, nk=(.85, 0, 0), hd=(.55, 0, 0), tail=(-.2, 0), wag=.3), 2.4, mod=chain(osc("hd", .16, 1.25, idx=1), osc("nk", .05, 3.3, idx=0), osc("dz", .004, .8)), events=[(.3, "sniff"), (1.1, "sniff"), (1.9, "sniff")], tag="act")
 EAT = S(pitch=.1, nk=(.8, 0, 0), hd=(.42, 0, 0), tail=(-.1, 0), wag=.5)
 hold("eat", EAT, 1.6, mod=chain(osc("hd", .09, 2.5, idx=0), osc("jaw", .16, 5, .25), lambda s, t: dict(s, jaw=abs(s["jaw"]))), events=[(.0, "chomp"), (.4, "chomp"), (.8, "chomp"), (1.2, "chomp")], tag="act")
+# 몇 입 먹고 고개를 들어 씹기 / 물 마시다 고개 들고 입맛 다시기 (0.10.0)
+seq("eat_lift", [(0, EAT), (.35, S(nk=(.15, 0, 0), hd=(.12, 0, 0), wag=.5, jaw=.1)), (1.0, S(nk=(.12, 0, 0), hd=(.15, 0, 0), wag=.5, jaw=.1)), (.4, EAT)],
+    mod=lambda s, t: dict(s, jaw=s["jaw"] + (abs(.13 * np.sin(2 * np.pi * 3.2 * t)) if .35 < t < 1.35 else 0)), events=[(.45, "chew"), (.75, "chew"), (1.05, "chew")], tag="act")
+seq("drink_lift", [(0, S(EAT, nk=(.86, 0, 0), wag=.2)), (.3, S(nk=(.2, 0, 0), hd=(.15, 0, 0), wag=.3)), (.7, S(nk=(.2, 0, 0), hd=(.15, 0, 0), wag=.3)), (.35, S(EAT, nk=(.86, 0, 0), wag=.2))],
+    mod=lambda s, t: dict(s, tongue=(.9 if .45 < t < .65 else 0), jaw=(.12 if .45 < t < .65 else 0)), events=[(.5, "lick")], tag="act")
+# 장난감 물기·내려놓기: 고개를 바닥까지 숙여 입을 벌렸다 다물고 듦 / 숙여서 입을 벌려 놓음
+seq("pick_up", [(0, STAND), (.3, S(pitch=.2, dy=-.006, dz=.012, nk=(1.12, 0, 0), hd=(.55, 0, 0), jaw=.38, wag=.6)), (.08, S(pitch=.2, dy=-.006, dz=.012, nk=(1.12, 0, 0), hd=(.55, 0, 0), jaw=.2, wag=.6)), (.37, S(jaw=.22, wag=.7))], tag="act")
+seq("drop_toy", [(0, S(jaw=.22)), (.32, S(pitch=.12, nk=(.95, 0, 0), hd=(.5, 0, 0), jaw=.22)), (.1, S(pitch=.12, nk=(.95, 0, 0), hd=(.5, 0, 0), jaw=.45)), (.38, STAND)], tag="act")
 hold("drink", S(EAT, nk=(.86, 0, 0), wag=.2), 1.2, mod=lambda s, t: dict(s, jaw=.14, tongue=.5 + .5 * np.sin(2 * np.pi * t / .3), hd=(s["hd"][0] + .03 * np.sin(2 * np.pi * t / .3), 0, 0)), events=[(.075 + i * .3, "lap") for i in range(4)], tag="act")
 hold("pee_squat", S(dy=-.045, pitch=-.28, dz=.01, nk=(-.1, 0, 0), tail=(.35, 0), wag=0, HL=(.03, 0, .02, -.3), HR=(.03, 0, .02, -.3)), 2.0, tag="act")
 hold("pee_leg", S(roll=-.12, yaw=.0, tail=(.2, 0), wag=0, HL=('a', -.5, 1.0, -.9, .3)), 2.0, tag="act")
@@ -387,8 +397,12 @@ hold("chew", S(DOWN, nk=(.25, 0, 0), hd=(.4, 0, .25), FL=(-.012, .02, .085, -1.4
      events=[(.0, "chew"), (.4, "chew"), (.8, "chew"), (1.2, "chew")], tag="act")
 hold("lick_paw", S(DOWN, nk=(.4, -.25, 0), hd=(.45, -.1, 0), FR=(-.01, .03, .075, -1.3), jaw=.1, wag=0), 1.2, mod=lambda s, t: dict(s, tongue=.5 + .5 * np.sin(2 * np.pi * t / .4), hd=(.45 + .08 * np.sin(2 * np.pi * t / .4), -.1, 0)), events=[(.1, "lick"), (.5, "lick"), (.9, "lick")], tag="act")
 seq("roll_over", [(0, DOWN), (.3, S(DOWN, roll=.9, dx=-.01)), (.25, S(SIDE)), (.3, S(BELLY, roll=3.14)), (.3, S(SIDE, roll=4.86, dx=.02)), (.25, S(DOWN, roll=5.5)), (.25, S(DOWN, roll=6.283))], events=[(.5, "thump")], tag="trick")
-hold("belly_wriggle", BELLY, 1.6, mod=chain(osc("sp", .25, 1.9, idx=1), osc("roll", .22, 1.9, .25), osc("yaw", .1, 1.9), lambda s, t: dict(s, HL=('a', -.9 + .4 * np.sin(2 * np.pi * t / .5), .5, -1.3, .6), HR=('a', -.7 + .4 * np.sin(2 * np.pi * t / .5 + 2), .5, -1.4, .6), jaw=.2, tongue=.3, wag=.8)), tag="act")
-hold("belly_rub", S(BELLY, lid=.7, jaw=.15, tongue=.4, wag=.6), 1.2, mod=lambda s, t: dict(s, HL=('a', -.9 + .5 * np.sin(2 * np.pi * t / .2), .5, -1.3 - .3 * np.sin(2 * np.pi * t / .2), .6), FL=('a', -.7, .3, 1.5 + .1 * np.sin(2 * np.pi * t / .6), .9)), tag="pet")
+hold("belly_wriggle", BELLY, 1.6, mod=chain(osc("sp", .22, 1.25, idx=1), osc("roll", .16, 1.25, .25), osc("hd", .12, 1.25, .5, idx=2),
+     lambda s, t: dict(s, HL=('a', -.6 + .35 * np.sin(2 * np.pi * t / .8), .9, -1.5, .9), HR=('a', -.45 + .35 * np.sin(2 * np.pi * t / .8 + 2), .7, -1.6, .8),
+                       FL=('a', -1.15 + .2 * np.sin(2 * np.pi * t / .8 + 1), .25, 1.9, 1.3), jaw=.2, tongue=.4, wag=.8)), tag="act")
+# 배를 쓰다듬으면: 눈을 가늘게 뜨고 뒷다리 하나를 톡톡 차며(긁어 주는 곳을 따라) 앞발을 오므림
+hold("belly_rub", S(BELLY, lid=.7, jaw=.15, tongue=.45, wag=.6), 1.2, mod=lambda s, t: dict(s, HL=('a', -.6 + .45 * np.sin(2 * np.pi * t / .22), .9, -1.5 - .3 * np.sin(2 * np.pi * t / .22), .9),
+     FL=('a', -1.15, .25, 1.9 + .12 * np.sin(2 * np.pi * t / .6), 1.3), hd=(-.25, .2, -.7 + .05 * np.sin(2 * np.pi * t / 1.2))), tag="pet")
 hold("dream", S(SIDE, lid=1), 3.0, mod=lambda s, t: dict(s, FL=('a', -.75 + (.22 * np.sin(2 * np.pi * t / .22) if .6 < t < 1.5 else 0), .1, .5, .3 + (.3 * np.sin(2 * np.pi * t / .22 + 1) if .6 < t < 1.5 else 0)),
      HL=('a', -.55 + (.2 * np.sin(2 * np.pi * t / .22 + 2) if .8 < t < 1.7 else 0), .1, .5, -.2), jaw=(.07 if 1.0 < t < 1.2 or 1.4 < t < 1.55 else 0), ear=(.15 * (1 if 2.0 < t < 2.1 else 0), 0), lid=1 - (.12 if 1.1 < t < 1.6 else 0)), events=[(1.0, "whimper")], tag="sleep")
 seq("side_stretch", [(0, SIDE), (.8, S(SIDE, sp=(-.2, 0, 0), nk=(-.3, 0, -.1), FL=('a', -1.2, .1, .1, -.3), FR=('a', -1.0, .05, .1, -.3), HL=('a', .25, .1, .1, .5), HR=('a', .4, .05, .1, .5), jaw=.3, lid=1)), (.9, S(SIDE, sp=(-.22, 0, 0), nk=(-.35, 0, -.1), FL=('a', -1.25, .1, .05, -.3), FR=('a', -1.05, .05, .05, -.3), HL=('a', .3, .1, .05, .5), HR=('a', .45, .05, .05, .5), jaw=.45, lid=1)), (.7, SIDE)], tag="act")

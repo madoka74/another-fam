@@ -412,7 +412,59 @@ final class Room {
         floorSlab.isEnabled = true
         let cx = nav.ox, cz = nav.oz
         nav.reset(x: cx, z: cz)
-        for a in meshCache.values { rasterize(a) }
+        epoch += 1
+        // 모든 조각을 다시 계산 — 차례로, 화면 밖 줄에서 (0.9: 여기서 전부를 한 번에 계산해 몇 초씩 멈췄음)
+        for id in meshCache.keys { enqueue(id) }
+    }
+
+    // MARK: 그물 → 길찾기 칸 (계산은 메인 밖에서 차례로)
+    private var rasterQ: [UUID] = []
+    private var rasterBusy = 0
+    private var epoch = 0
+    private var occAt: [UUID: Double] = [:]
+
+    private func enqueue(_ id: UUID) {
+        if !rasterQ.contains(id) { rasterQ.append(id) }
+        pump()
+    }
+
+    private func pump() {
+        while rasterBusy < 2, !rasterQ.isEmpty {
+            let id = rasterQ.removeFirst()
+            guard let a = meshCache[id], let fy = floorY else { continue }
+            let job = RasterJob(a, fy: fy, ox: nav.ox, oz: nav.oz, epoch: epoch)
+            rasterBusy += 1
+            Task.detached(priority: .utility) {
+                let r = job.run()
+                await self.finish(id, r, job.epoch)
+            }
+        }
+    }
+
+    private func finish(_ id: UUID, _ r: RasterOut, _ ep: Int) {
+        rasterBusy -= 1
+        defer { pump() }
+        guard !ended else { return }
+        if ep != epoch { enqueue(id); return }
+        nav.update(id, floorCells: r.floor, blockCells: r.block)
+        // 가림 그물은 3초에 한 번만 새로 (그물 만들기는 메인에서 해야 함)
+        let now = CACurrentMediaTime()
+        guard now - (occAt[id] ?? 0) > 3 else { return }
+        occAt[id] = now
+        guard r.occIdx.count >= 3 else { occluders[id]?.isEnabled = false; return }
+        var d = MeshDescriptor(name: "occ")
+        d.positions = MeshBuffers.Positions(r.occPos)
+        d.primitives = .triangles(r.occIdx)
+        guard let mesh = try? MeshResource.generate(from: [d]) else { return }
+        if let e = occluders[id] {
+            e.model?.mesh = mesh
+            e.isEnabled = occlusion
+        } else {
+            let e = ModelEntity(mesh: mesh, materials: [OcclusionMaterial()])
+            e.isEnabled = occlusion
+            occluders[id] = e
+            root.addChild(e)
+        }
     }
 
     // MARK: 스캔 그물
@@ -428,7 +480,7 @@ final class Room {
             let now = CACurrentMediaTime()
             if now - (meshAt[a.id] ?? 0) > 1.2 {
                 meshAt[a.id] = now
-                rasterize(a)
+                enqueue(a.id)
             }
             if now - (shapeAt[a.id] ?? 0) > 2.5 {
                 shapeAt[a.id] = now
@@ -442,84 +494,6 @@ final class Room {
                     if self.colliders[id] == nil { self.colliders[id] = e; self.root.addChild(e) }
                 }
             }
-        }
-    }
-
-    /// 그물 조각 → 길찾기 칸 + 가림 그물
-    private func rasterize(_ a: MeshAnchor) {
-        guard let fy = floorY else { return }
-        let g = a.geometry
-        let vs = g.vertices, ns = g.normals, fs = g.faces
-        let m = a.originFromAnchorTransform
-        let vp = vs.buffer.contents().advanced(by: vs.offset)
-        let np = ns.buffer.contents().advanced(by: ns.offset)
-        var pos: [SIMD3<Float>] = [], nrm: [SIMD3<Float>] = []
-        pos.reserveCapacity(vs.count); nrm.reserveCapacity(vs.count)
-        let rot = simd_float3x3(simd_make_float3(m.columns.0), simd_make_float3(m.columns.1), simd_make_float3(m.columns.2))
-        let tr = simd_make_float3(m.columns.3)
-        for i in 0..<vs.count {
-            let o = i * vs.stride
-            let p = SIMD3<Float>(vp.loadUnaligned(fromByteOffset: o, as: Float.self), vp.loadUnaligned(fromByteOffset: o + 4, as: Float.self), vp.loadUnaligned(fromByteOffset: o + 8, as: Float.self))
-            pos.append(rot * p + tr)
-            if i < ns.count {
-                let q = i * ns.stride
-                let n = SIMD3<Float>(np.loadUnaligned(fromByteOffset: q, as: Float.self), np.loadUnaligned(fromByteOffset: q + 4, as: Float.self), np.loadUnaligned(fromByteOffset: q + 8, as: Float.self))
-                nrm.append(rot * n)
-            } else { nrm.append(SIMD3<Float>(0, 1, 0)) }
-        }
-        let fp = fs.buffer.contents()
-        let bpi = fs.bytesPerIndex
-        let nidx = fs.count * 3
-        var floorCells: [Int32] = [], blockCells: [Int32] = []
-        var occIdx: [UInt32] = []
-        occIdx.reserveCapacity(nidx)
-        var t = 0
-        while t + 2 < nidx {
-            var id = [0, 0, 0]
-            for k in 0..<3 {
-                id[k] = bpi == 2 ? Int(fp.loadUnaligned(fromByteOffset: (t + k) * 2, as: UInt16.self)) : Int(fp.loadUnaligned(fromByteOffset: (t + k) * 4, as: UInt32.self))
-            }
-            t += 3
-            guard id[0] < pos.count, id[1] < pos.count, id[2] < pos.count else { continue }
-            let a0 = pos[id[0]], a1 = pos[id[1]], a2 = pos[id[2]]
-            var fn = simd_cross(a1 - a0, a2 - a0)
-            let fl = simd_length(fn)
-            if fl < 1e-9 { continue }
-            fn /= fl
-            let hmid: Float = (a0.y + a1.y + a2.y) / 3 - fy
-            let isFloor = abs(hmid) < 0.07 && fn.y > 0.8
-            if !isFloor { occIdx.append(UInt32(id[0])); occIdx.append(UInt32(id[1])); occIdx.append(UInt32(id[2])) }
-            // 삼각형 안을 6cm 간격으로 찍어 칸에 담음
-            let edge = max(simd_distance(a0, a1), simd_distance(a1, a2), simd_distance(a2, a0))
-            let n = min(8, max(1, Int(edge / 0.06)))
-            for i in 0...n {
-                for j in 0...(n - i) {
-                    let u = Float(i) / Float(n), v = Float(j) / Float(n)
-                    let p: SIMD3<Float> = a0 + (a1 - a0) * u + (a2 - a0) * v
-                    guard let c = nav.index(p.x, p.z) else { continue }
-                    let h = p.y - fy
-                    if isFloor { floorCells.append(Int32(c)) }
-                    else if h > 0.06 && h < 0.40 { blockCells.append(Int32(c)) }
-                }
-            }
-        }
-        nav.update(a.id, floorCells: floorCells, blockCells: blockCells)
-        // 가림: 면을 안쪽으로 2.5cm 물려 (스캔 오차로 발·털이 잘리지 않게) 현실 가구 뒤의 개를 가림. 바닥은 뺌
-        guard occIdx.count >= 3 else { occluders[a.id]?.isEnabled = false; return }
-        var op = pos
-        for i in 0..<op.count { op[i] -= nrm[i] * 0.025 }
-        var d = MeshDescriptor(name: "occ")
-        d.positions = MeshBuffers.Positions(op)
-        d.primitives = .triangles(occIdx)
-        guard let mesh = try? MeshResource.generate(from: [d]) else { return }
-        if let e = occluders[a.id] {
-            e.model?.mesh = mesh
-            e.isEnabled = occlusion
-        } else {
-            let e = ModelEntity(mesh: mesh, materials: [OcclusionMaterial()])
-            e.isEnabled = occlusion
-            occluders[a.id] = e
-            root.addChild(e)
         }
     }
 
@@ -568,5 +542,91 @@ final class Room {
         h.seen = true
         h.lastT = now
         hands[i] = h
+    }
+}
+
+/// 그물 조각 하나를 길찾기 칸·가림 그물로 바꾸는 일 (메인에서 그물 값만 복사해 두고 계산은 밖에서)
+struct RasterOut: Sendable {
+    var floor: [Int32] = [], block: [Int32] = []
+    var occPos: [SIMD3<Float>] = [], occIdx: [UInt32] = []
+}
+
+struct RasterJob: Sendable {
+    let pos: [SIMD3<Float>], nrm: [SIMD3<Float>], idx: [UInt32]
+    let fy: Float, ox: Float, oz: Float, epoch: Int
+
+    @MainActor init(_ a: MeshAnchor, fy: Float, ox: Float, oz: Float, epoch: Int) {
+        let g = a.geometry
+        let vs = g.vertices, ns = g.normals, fs = g.faces
+        let m = a.originFromAnchorTransform
+        let rot = simd_float3x3(simd_make_float3(m.columns.0), simd_make_float3(m.columns.1), simd_make_float3(m.columns.2))
+        let tr = simd_make_float3(m.columns.3)
+        let vp = vs.buffer.contents().advanced(by: vs.offset)
+        let np = ns.buffer.contents().advanced(by: ns.offset)
+        var p: [SIMD3<Float>] = [], n: [SIMD3<Float>] = []
+        p.reserveCapacity(vs.count); n.reserveCapacity(vs.count)
+        for i in 0..<vs.count {
+            let o = i * vs.stride
+            p.append(rot * SIMD3<Float>(vp.loadUnaligned(fromByteOffset: o, as: Float.self), vp.loadUnaligned(fromByteOffset: o + 4, as: Float.self), vp.loadUnaligned(fromByteOffset: o + 8, as: Float.self)) + tr)
+            if i < ns.count {
+                let q = i * ns.stride
+                n.append(rot * SIMD3<Float>(np.loadUnaligned(fromByteOffset: q, as: Float.self), np.loadUnaligned(fromByteOffset: q + 4, as: Float.self), np.loadUnaligned(fromByteOffset: q + 8, as: Float.self)))
+            } else { n.append(SIMD3<Float>(0, 1, 0)) }
+        }
+        let fp = fs.buffer.contents()
+        let bpi = fs.bytesPerIndex
+        let nidx = fs.count * 3
+        var ix: [UInt32] = []
+        ix.reserveCapacity(nidx)
+        for t in 0..<nidx {
+            ix.append(bpi == 2 ? UInt32(fp.loadUnaligned(fromByteOffset: t * 2, as: UInt16.self)) : fp.loadUnaligned(fromByteOffset: t * 4, as: UInt32.self))
+        }
+        pos = p; nrm = n; idx = ix
+        self.fy = fy; self.ox = ox; self.oz = oz; self.epoch = epoch
+    }
+
+    private func cellOf(_ x: Float, _ z: Float) -> Int? {
+        let i = Int(((x - ox) / NavGrid.cell).rounded(.down)) + NavGrid.n / 2
+        let j = Int(((z - oz) / NavGrid.cell).rounded(.down)) + NavGrid.n / 2
+        guard i >= 0, j >= 0, i < NavGrid.n, j < NavGrid.n else { return nil }
+        return j * NavGrid.n + i
+    }
+
+    func run() -> RasterOut {
+        var out = RasterOut()
+        var t = 0
+        while t + 2 < idx.count {
+            let i0 = Int(idx[t]), i1 = Int(idx[t + 1]), i2 = Int(idx[t + 2])
+            t += 3
+            guard i0 < pos.count, i1 < pos.count, i2 < pos.count else { continue }
+            let a0 = pos[i0], a1 = pos[i1], a2 = pos[i2]
+            var fn = simd_cross(a1 - a0, a2 - a0)
+            let fl = simd_length(fn)
+            if fl < 1e-9 { continue }
+            fn /= fl
+            let hmid: Float = (a0.y + a1.y + a2.y) / 3 - fy
+            let isFloor = abs(hmid) < 0.07 && fn.y > 0.8
+            if !isFloor { out.occIdx.append(UInt32(i0)); out.occIdx.append(UInt32(i1)); out.occIdx.append(UInt32(i2)) }
+            // 삼각형 안을 6cm 간격으로 찍어 칸에 담음
+            let edge = max(simd_distance(a0, a1), simd_distance(a1, a2), simd_distance(a2, a0))
+            let n = min(8, max(1, Int(edge / 0.06)))
+            for i in 0...n {
+                for j in 0...(n - i) {
+                    let u = Float(i) / Float(n), v = Float(j) / Float(n)
+                    let p: SIMD3<Float> = a0 + (a1 - a0) * u + (a2 - a0) * v
+                    guard let c = cellOf(p.x, p.z) else { continue }
+                    let h = p.y - fy
+                    if isFloor { out.floor.append(Int32(c)) }
+                    else if h > 0.06 && h < 0.40 { out.block.append(Int32(c)) }
+                }
+            }
+        }
+        // 가림: 면을 안쪽으로 2.5cm 물려 (스캔 오차로 발·털이 잘리지 않게) 현실 가구 뒤의 개를 가림. 바닥은 뺌
+        if out.occIdx.count >= 3 {
+            var op = pos
+            for i in 0..<op.count { op[i] -= nrm[i] * 0.025 }
+            out.occPos = op
+        }
+        return out
     }
 }

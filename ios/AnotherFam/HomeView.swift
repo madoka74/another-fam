@@ -113,6 +113,7 @@ struct AdoptView: View {
 // MARK: - 홈
 struct HomeTab: View {
     private var model: AppModel { AppModel.shared }
+    @State private var info: (key: String, text: String)?
 
     var body: some View {
         if let p = model.pet {
@@ -130,9 +131,16 @@ struct HomeTab: View {
                 ProgressView(value: min(1, age / Sim.maxAge)) { Text("함께한 지 \(days)일").font(.caption).foregroundStyle(.secondary) }
                 let items = Needs.list(p)
                 HStack(spacing: 22) {
-                    ForEach(0..<items.count, id: \.self) { i in NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 64) }
+                    ForEach(0..<items.count, id: \.self) { i in
+                        let k = NeedInfo.key(items[i].0)
+                        Button { if info?.key == k { info = nil } else { info = (k, NeedInfo.text(p, k)) } } label: {
+                            NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 64)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
                 .padding(.vertical, 8)
+                if let info { Text(info.text).font(.title3).multilineTextAlignment(.center) }
                 HStack(spacing: 16) {
                     Button { model.playOpen ? model.rest() : model.play() } label: {
                         Label(model.playOpen ? "쉬기" : "함께하기", systemImage: model.playOpen ? "house.fill" : "pawprint.fill")
@@ -221,8 +229,19 @@ struct StorageTab: View {
                             Spacer()
                             if StorageTab.instant.contains(it.id) {
                                 Button("쓰기") { model.useNow(it.id) }.frame(width: 110)
-                            } else if it.id == "leash" {
+                            } else if it.id == "leash" || it.id == "formula" {
                                 EmptyView()
+                            } else if it.cat == .food && it.id != "treat" && it.id != "dental" {
+                                // 사료: 봉지를 손 앞에 꺼냄 → 밥그릇 위에서 기울여 부음
+                                Button("꺼내기") { model.takeOut(it.id) }.frame(width: 110).disabled(p.count(it.id) == 0)
+                            } else if it.id == "pad" {
+                                // 패드: 한 장을 손 앞에 꺼냄 → 바닥에 놓으면 깔리고(있던 것은 걷힘), 오줌에 대고 문지르면 닦임
+                                HStack(spacing: 8) {
+                                    Button("꺼내기") { model.takeOut("pad") }.frame(width: 100).disabled(p.count("pad") == 0)
+                                    if model.session?.isOut("pad") == true { Button("걷기") { model.putBack("pad") }.frame(width: 90) }
+                                }
+                            } else if it.id == "bag" {
+                                Button("꺼내기") { model.takeOut("bag") }.frame(width: 110).disabled(p.count("bag") == 0)
                             } else if Catalog.placeable.contains(it.id) || StorageTab.handy.contains(it.id) {
                                 let out = model.session?.isOut(it.id) == true
                                 Button(out ? "넣기" : "꺼내기") { out ? model.putBack(it.id) : model.takeOut(it.id) }.frame(width: 110)
@@ -293,6 +312,10 @@ struct SettingsTab: View {
             // 말로 부르기·시키기: 간식으로 재주를 가르치며 말하면 그 말을 배움 (사람마다 다른 말도 각각)
             Section("목소리") {
                 Toggle("말 알아듣기", isOn: Binding(get: { voice }, set: { voice = $0; VoiceEar.enabled = $0 }))
+                LabeledContent("최근 들은 말", value: VoiceEar.recent.isEmpty ? "없음" : VoiceEar.recent.prefix(5).joined(separator: " · "))
+                if let p = model.pet, p.words.values.allSatisfy({ ($0.values.max() ?? 0) < 0.2 }) {
+                    LabeledContent("배운 말", value: "아직 없음")
+                }
                 if let p = model.pet, !p.words.isEmpty {
                     let list = p.words.compactMap { w, m -> (String, String, Float)? in
                         guard let b = m.max(by: { $0.value < $1.value }), b.value >= 0.2 else { return nil }

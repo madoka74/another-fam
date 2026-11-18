@@ -16,7 +16,9 @@ final class SoundBank {
     func preload() {
         guard !loaded else { return }
         loaded = true
-        let urls = Bundle.main.urls(forResourcesWithExtension: "wav", subdirectory: "Sounds") ?? []
+        var urls = Bundle.main.urls(forResourcesWithExtension: "wav", subdirectory: "Sounds") ?? []
+        // 쓸 소리 목록(index.txt)이 있으면 그것만 — 저장소에 남은 예전 소리 파일은 무시 (GitHub 웹 업로드로는 파일을 지우기 번거로움)
+        if let use = SoundBank.manifest() { urls = urls.filter { use.contains($0.deletingPathExtension().lastPathComponent) } }
         for u in urls {
             let name = u.deletingPathExtension().lastPathComponent
             guard let r = try? AudioFileResource.load(contentsOf: u, withName: name,
@@ -28,6 +30,13 @@ final class SoundBank {
             groups[base, default: []].append(name)
         }
         for k in Array(groups.keys) { groups[k]?.sort() }
+    }
+
+    nonisolated static func manifest() -> Set<String>? {
+        guard let u = Bundle.main.url(forResource: "index", withExtension: "txt", subdirectory: "Sounds"),
+              let t = try? String(contentsOf: u, encoding: .utf8) else { return nil }
+        let names = t.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return names.isEmpty ? nil : Set(names)
     }
 
     func has(_ base: String) -> Bool { groups[base] != nil || res[base] != nil }

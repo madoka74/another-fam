@@ -63,14 +63,21 @@ final class AppModel {
 
     /// 앱으로 돌아옴: 그동안 흐른 시간을 따라잡음
     func wake() {
-        guard session == nil, var p = pet else { return }
+        if let s = session {
+            // 다시 앞으로: 함께 있다는 표시를 다시 올림
+            if !s.pet.together { s.pet.together = true; Store.save(s.pet, force: true) }
+            return
+        }
+        guard var p = pet else { return }
         p.catchUp()
         pet = p
         Store.save(p)
     }
 
+    /// 앱이 뒤로 감(기기를 벗거나 다른 앱으로): 함께 있다는 표시를 내리고 바로 올림 → 아이폰이 그때부터 다시 알림을 맡음
     func sleep() {
-        if let s = session { Store.save(s.pet, force: true) } else if let p = pet { Store.save(p, force: true) }
+        if let s = session { s.pet.together = false; s.pet.lastSim = Date().timeIntervalSince1970; Store.saveFinal(s.pet) }
+        else if var p = pet { p.together = false; pet = p; Store.saveFinal(p) }
     }
 
     func adopt(name: String, male: Bool) {

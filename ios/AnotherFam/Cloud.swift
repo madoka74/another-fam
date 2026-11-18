@@ -1,5 +1,6 @@
 import Foundation
 import CloudKit
+import UIKit
 
 /// 비전 앱 → 아이폰 앱 '바로' 알리기 (0.8.0).
 /// 키-값 저장소(CloudPet)는 아이폰 앱이 켜져 있을 때만 읽혀서, 비전에서 밥을 준 뒤에도 아이폰은 예전 예약대로 '배고파해요'를 울렸음.
@@ -28,19 +29,24 @@ enum CloudSync {
     /// 비전 앱: 알림에 영향을 주는 값이 바뀌었거나(10초 간격) 5분이 지났거나 force(공간을 닫을 때)면 올림
     static func push(_ p: PetState, data: Foundation.Data, force: Bool = false) {
         let r = { (x: Float) in Int((x * 10).rounded()) }
-        let sig = "\(r(p.food))\(r(p.water))\(r(p.fun))\(r(p.love))\(r(p.potty))\(p.poops)\(p.asleep)\(r(p.bottle))"
+        let sig = "\(r(p.food))\(r(p.water))\(r(p.fun))\(r(p.love))\(r(p.potty))\(p.poops)\(p.asleep)\(r(p.bottle))\(p.together)\(r(p.foodBowl))\(r(p.waterBowl))"
         let now = Date().timeIntervalSince1970
         let changed = sig != lastSig
         guard force || (changed && now - lastPush > 10) || now - lastPush > 300 else { return }
         lastPush = now
         lastSig = sig
-        Task.detached(priority: .utility) {
-            guard await ensureZone() else { return }
-            let rec = CKRecord(recordType: "Pet", recordID: recordID)
-            rec["state"] = data as CKRecordValue
-            rec["at"] = Date() as CKRecordValue
-            // 덮어쓰기 (읽어 오지 않고 늘 새 값으로)
-            _ = try? await db.modifyRecords(saving: [rec], deleting: [], savePolicy: .allKeys, atomically: false)
+        Task.detached(priority: force ? .userInitiated : .utility) {
+            // 공간을 닫거나 앱이 뒤로 갈 때(force)는 올리기가 끝날 때까지 앱이 멈추지 않게 시간을 빌림
+            // (0.9: 닫는 순간 올리던 것이 끊겨, 아이폰은 계속 '지금 함께 있어요'로 보였음)
+            let bg: UIBackgroundTaskIdentifier = force ? await MainActor.run { UIApplication.shared.beginBackgroundTask(withName: "af.push", expirationHandler: nil) } : .invalid
+            if await ensureZone() {
+                let rec = CKRecord(recordType: "Pet", recordID: recordID)
+                rec["state"] = data as CKRecordValue
+                rec["at"] = Date() as CKRecordValue
+                // 덮어쓰기 (읽어 오지 않고 늘 새 값으로)
+                _ = try? await db.modifyRecords(saving: [rec], deleting: [], savePolicy: .allKeys, atomically: false)
+            }
+            if bg != .invalid { await MainActor.run { UIApplication.shared.endBackgroundTask(bg) } }
         }
     }
 

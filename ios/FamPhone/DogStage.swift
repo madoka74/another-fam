@@ -1,5 +1,6 @@
 import SwiftUI
 import RealityKit
+import AVFoundation
 import simd
 
 /// 폰에서 보는 지금의 팸: 비전 앱과 같은 그물·털·움직임 코드(DogSkin·DogAnimator)로 그려, 손가락으로 돌려 봄.
@@ -110,6 +111,35 @@ final class DogStage {
         }
     }
 
+    /// 톡 건드림: 지금 상태에 맞게 짧게 반응하고 소리를 냄 (자면 귀만 쫑긋, 배고프면 낑낑, 기분 좋으면 갸웃·꼬리)
+    func poke() {
+        guard let a = anim, !a.busy else { return }
+        let age = pet.age()
+        nextAt = t + 5
+        if baby {
+            if doing != .sleeping { a.play("nb_squirm", then: "newborn") }
+            PhoneSound.shared.play("mewl", age: age, gain: 0.7)
+            return
+        }
+        switch doing {
+        case .sleeping:
+            a.overlay("ear_perk")
+            PhoneSound.shared.play("sigh", age: age, gain: 0.6)
+        case .hungry, .thirsty, .lonely:
+            a.overlay("whine")
+            PhoneSound.shared.play(Bool.random() ? "whine" : "whimper", age: age, gain: 0.8)
+        case .bored:
+            a.setPosture("stand")
+            a.play("bow_wiggle", then: "stand")
+            PhoneSound.shared.play(age < 56 ? "yip" : "bark", age: age, gain: 0.8)
+        default:
+            a.overlay(Bool.random() ? "tilt_lr" : "ear_perk")
+            pokeAt = t
+            PhoneSound.shared.play(age < 56 ? "yip" : (Bool.random() ? "woof" : "sniff"), age: age, gain: 0.7)
+        }
+    }
+    private var pokeAt: Float = -9
+
     /// 몇 초마다 그 상태다운 작은 동작 하나
     private func fidget() {
         guard let a = anim, !a.busy else { return }
@@ -165,7 +195,7 @@ final class DogStage {
         }
         let sleeping = doing == .sleeping
         a.asleep = sleeping && holdNext == nil
-        a.wagBoost = sleeping ? 0 : (0.3 + 1.1 * pet.mood + (doing == .together ? 0.7 : 0))
+        a.wagBoost = sleeping ? 0 : (0.3 + 1.1 * pet.mood + (doing == .together ? 0.7 : 0) + (t - pokeAt < 3 ? 0.9 : 0))
         a.breathRate = 0.38
         // 깨어 있으면 가끔 나(카메라)를 봄
         a.look = (sleeping || baby) ? nil : camPos / max(0.2, g)
@@ -177,5 +207,42 @@ final class DogStage {
         sk.setEyeAge(old)
         dog.scale = SIMD3<Float>(repeating: g)
         placeCamera()
+    }
+}
+
+/// 폰에서 내는 강아지 소리 (비전 앱과 같은 녹음: Sounds 폴더). 무음 스위치를 따름
+@MainActor
+final class PhoneSound {
+    static let shared = PhoneSound()
+    private var groups: [String: [URL]] = [:]
+    private var players: [AVAudioPlayer] = []
+    private var loaded = false
+
+    private func load() {
+        guard !loaded else { return }
+        loaded = true
+        var use: Set<String>?
+        if let u = Bundle.main.url(forResource: "index", withExtension: "txt", subdirectory: "Sounds"), let t = try? String(contentsOf: u, encoding: .utf8) {
+            let n = t.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            if !n.isEmpty { use = Set(n) }
+        }
+        for u in Bundle.main.urls(forResourcesWithExtension: "wav", subdirectory: "Sounds") ?? [] where use?.contains(u.deletingPathExtension().lastPathComponent) ?? true {
+            var base = u.deletingPathExtension().lastPathComponent
+            while let l = base.last, l.isNumber { base.removeLast() }
+            groups[base, default: []].append(u)
+        }
+    }
+
+    func play(_ base: String, age: Double, gain: Float = 1) {
+        load()
+        var name = base
+        if age < 90, groups[base + "_pup"] != nil { name = base + "_pup" }
+        else if age >= 3650, groups[base + "_old"] != nil { name = base + "_old" }
+        guard let u = (groups[name] ?? groups[base])?.randomElement(), let p = try? AVAudioPlayer(contentsOf: u) else { return }
+        try? AVAudioSession.sharedInstance().setCategory(.ambient, options: [.mixWithOthers])
+        p.volume = gain
+        p.play()
+        players.removeAll { !$0.isPlaying }
+        players.append(p)
     }
 }

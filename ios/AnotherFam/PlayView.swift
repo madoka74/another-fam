@@ -16,9 +16,10 @@ struct PlayView: View {
             Attachment(id: "card") { StatusCard(s: s) }
         }
         // 강아지를 바라보고 집으면 상태 카드
-        .gesture(SpatialTapGesture().targetedToEntity(where: .has(DogTag.self)).onEnded { _ in s.tapDog() })
-        // 그릇·패드·치울 것: 바라보고 집으면 채우기·갈기·치우기
-        .simultaneousGesture(SpatialTapGesture().targetedToEntity(where: .has(PropTag.self)).onEnded { v in s.tapProp(v.entity) })
+        // 탭 자리를 함께 넘김: 손가락이 직접 닿은 탭(쓰다듬기)만 거르고, 바라보고 집은 탭은 가까이 있어도 받음 (0.10.0)
+        .gesture(SpatialTapGesture().targetedToEntity(where: .has(DogTag.self)).onEnded { v in s.tapDog(at: v.convert(v.location3D, from: .local, to: .scene)) })
+        // 그릇·패드·치울 것: 바라보고 집으면 쓸 도구를 꺼내 주거나 하는 법을 알려 줌
+        .simultaneousGesture(SpatialTapGesture().targetedToEntity(where: .has(PropTag.self)).onEnded { v in s.tapProp(v.entity, at: v.convert(v.location3D, from: .local, to: .scene)) })
         // 안고 있는 동안은 진짜 손이 강아지 위에 겹쳐 그려지지 않게 (손에 가려 강아지가 흐릿했음)
         .upperLimbVisibility(s.holding ? .hidden : .automatic)
         .task {
@@ -107,8 +108,13 @@ struct StatusCard: View {
                 }
                 HStack(spacing: 14) {
                     let items = Needs.list(p)
-                    ForEach(0..<items.count, id: \.self) { i in NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 46) }
+                    ForEach(0..<items.count, id: \.self) { i in
+                        // 고리를 보고 집으면 그 욕구의 지금과 앞으로 (아이폰·메인 메뉴와 같은 글)
+                        Button { s.showRing(NeedInfo.key(items[i].0)) } label: { NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 46) }
+                            .buttonStyle(.plain)
+                    }
                 }
+                if let t = s.ringInfo { Text(t).font(.callout).multilineTextAlignment(.center).frame(maxWidth: 560) }
                 HStack(spacing: 12) {
                     CardButton(icon: "fork.knife", title: "밥") { s.feed() }
                     if p.age() >= 21 { CardButton(icon: "drop.fill", title: "물") { s.giveWater() } }
