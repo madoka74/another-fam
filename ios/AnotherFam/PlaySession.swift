@@ -49,6 +49,8 @@ final class PlaySession {
     @ObservationIgnored private var adding = 0
     @ObservationIgnored private var beatAt: Double = 0
     @ObservationIgnored private var tools = ToolWork()
+    @ObservationIgnored private let bodyCol = Entity()
+    @ObservationIgnored private let legCol = Entity()
     @ObservationIgnored let ear = VoiceEar()                    // 사람 목소리 (말로 부르기·시키기)
     @ObservationIgnored private var homeLost = false             // 저장된 집 고정점이 기기에 없음 → 기다리지 않고 새로 만들어 확정
     @ObservationIgnored private var oldHomeId: UUID?           // 지난 집을 제때 못 찾아 임시 집을 만든 동안: 늦게라도 찾으면 원래 자리로
@@ -81,6 +83,13 @@ final class PlaySession {
         SoundBank.shared.preload()
         root.addChild(room.root)
         root.components.set(PhysicsSimulationComponent())      // 물리 기준을 공간 하나로 (중력 9.8m/s²)
+        // 내 몸 부딪힘: 공·장난감이 내 몸을 뚫고 지나가지 않게 (머리 아래 몸통 기둥 + 앉으면 앞으로 뻗은 다리)
+        for (i, e) in [bodyCol, legCol].enumerated() {
+            e.components.set(CollisionComponent(shapes: [i == 0 ? .generateBox(size: SIMD3<Float>(0.34, 1.0, 0.26)) : .generateBox(size: SIMD3<Float>(0.36, 0.16, 0.6))]))
+            e.components.set(PhysicsBodyComponent(massProperties: .default, material: PhysicsMaterialResource.generate(friction: 0.6, restitution: 0.2), mode: .kinematic))
+            e.isEnabled = false
+            root.addChild(e)
+        }
         room.onAnchor = { [weak self] a, removed in self?.anchor(a, removed) }
         if let s = UserDefaults.standard.string(forKey: "af.home"), let id = UUID(uuidString: s) { homeId = id }
         if let m = UserDefaults.standard.dictionary(forKey: "af.anchors") as? [String: String] {
@@ -716,7 +725,10 @@ final class PlaySession {
             toast("젖병을 집어 입에 대 주세요")
             return
         }
+        // 봉지를 이미 꺼냈으면 다시 누를 때 넣음 (0.10.0: 꺼낸 봉지·물병을 치울 방법이 없었음)
+        if isOut("foodbag") { putBack("foodbag"); toast("사료 봉지를 넣었어요"); return }
         guard pet.has("bowl_food") else { AppModel.shared.showMain(tab: 2, note: "밥그릇이 필요해요"); return }
+        if let b = prop("bowl_food"), b.fill > 0.95 { toast("밥그릇이 가득 차 있어요"); return }
         guard Catalog.foodFor(age).contains(where: { $0 != "formula" && pet.count($0) > 0 }) else { AppModel.shared.showMain(tab: 2, note: "맞는 사료가 없어요"); return }
         if !isOut("bowl_food"), let why = takeOut("bowl_food") { toast(why); return }
         if !isOut("foodbag"), let why = takeOut("foodbag") { toast(why); return }
@@ -726,6 +738,8 @@ final class PlaySession {
     func giveWater() {
         cardUntil = now + 12
         if pet.age() < 21 { toast("아직 젖만 먹어요"); return }
+        if isOut("jug") { putBack("jug"); toast("물병을 넣었어요"); return }
+        if let b = prop("bowl_water"), b.fill > 0.95 { toast("물그릇이 가득 차 있어요"); return }
         if !isOut("bowl_water"), let why = takeOut("bowl_water") { toast(why); return }
         if !isOut("jug"), let why = takeOut("jug") { toast(why); return }
         toast("물병을 집어 물그릇 위에서 기울여 주세요")
@@ -795,6 +809,17 @@ final class PlaySession {
             ex.append((u, 0.24))
             if sitting { for k in 1...3 { ex.append((u + f2 * (0.2 * Float(k)), 0.2)) } }
             else { ex.append((u + f2 * 0.12, 0.2)) }
+            // 물리 몸: 눈 아래 15cm 부터 바닥까지 기둥, 앉아 있으면 다리 상자
+            let top = userPos.y - 0.15, h = max(0.3, top - fy)
+            bodyCol.isEnabled = true
+            bodyCol.setScale(SIMD3<Float>(1, h, 1), relativeTo: nil)
+            bodyCol.setPosition(SIMD3<Float>(userPos.x - userFwd.x * 0.04, fy + h / 2, userPos.z - userFwd.z * 0.04), relativeTo: nil)
+            bodyCol.setOrientation(Q.ry(atan2(userFwd.x, userFwd.z)), relativeTo: nil)
+            legCol.isEnabled = sitting
+            if sitting {
+                legCol.setPosition(SIMD3<Float>(userPos.x + userFwd.x * 0.42, fy + 0.08, userPos.z + userFwd.z * 0.42), relativeTo: nil)
+                legCol.setOrientation(Q.ry(atan2(userFwd.x, userFwd.z)), relativeTo: nil)
+            }
         }
         room.nav.extra = ex
         // 가림 그물: 강아지를 안거나 아주 가까이 있을 때는 끔 — 내 몸·다리가 스캔돼 생긴 가림 면이 강아지 몸을 잘라

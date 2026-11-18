@@ -127,6 +127,16 @@ final class Prop {
             add(Geo.lathe([(0, 0.03), (0.175, 0.03), (0.18, 0.04), (0.17, 0.048), (0.1, 0.053), (0, 0.054)], seg: 36), Geo.fabric("plush", SIMD3<Float>(0.93, 0.90, 0.85)))
             r = 0.28
             shape = ShapeResource.generateBox(size: SIMD3<Float>(0.54, 0.05, 0.54)).offsetBy(translation: SIMD3<Float>(0, 0.025, 0))
+            // 부딪힘도 실제 모양대로: 바닥판 + 가운데 방석 + 둘레 쿠션(16조각). 0.10.0 은 높이 5cm 납작한 상자라
+            // 공이 그 위에 올라가 둘레 쿠션(10cm)을 뚫고 굴러다녔음
+            var cs: [ShapeResource] = [ShapeResource.generateBox(size: SIMD3<Float>(0.54, 0.012, 0.54)).offsetBy(translation: SIMD3<Float>(0, 0.006, 0)),
+                                       ShapeResource.generateBox(size: SIMD3<Float>(0.32, 0.05, 0.32)).offsetBy(translation: SIMD3<Float>(0, 0.027, 0))]
+            for i in 0..<16 {
+                let a = Float(i) / 16 * 2 * .pi
+                cs.append(ShapeResource.generateBox(size: SIMD3<Float>(0.10, 0.10, 0.092))
+                    .offsetBy(rotation: simd_quatf(angle: a, axis: SIMD3<Float>(0, 1, 0)), translation: SIMD3<Float>(sin(a) * 0.22, 0.05, cos(a) * 0.22)))
+            }
+            shapes = cs
         case "pad", "padsheet":
             // 배변 패드: 파란 방수 테두리 + 누빔 무늬 흡수면
             add(.generateBox(width: 0.46, height: 0.004, depth: 0.34, cornerRadius: 0.002), Geo.mat(SIMD3<Float>(0.50, 0.70, 0.88), rough: 0.6), at: SIMD3<Float>(0, 0.002, 0))
@@ -457,7 +467,8 @@ final class Prop {
     private func showFill() {
         guard let c = content else { return }
         switch id {
-        case "pad":
+        case "pad", "padsheet":
+            // 새 패드는 깨끗하게 (0.10.0: 꺼낸 패드에 쓰던 패드의 얼룩이 그대로 보였음)
             c.isEnabled = fill > 0.01
             c.scale = SIMD3<Float>(repeating: 0.6 + 0.6 * fill)
         case "pee":

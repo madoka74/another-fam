@@ -42,6 +42,7 @@ struct NeedRing: View {
     let icon: String
     let value: Float
     var size: CGFloat = 40
+    var tappable = false
 
     var body: some View {
         let v = CGFloat(min(1, max(0, value)))
@@ -53,6 +54,9 @@ struct NeedRing: View {
                 Image(systemName: icon).font(.system(size: size * 0.38)).foregroundStyle(value < 0.25 ? Color.red : .primary)
             }
             .frame(width: size, height: size)
+            .padding(tappable ? size * 0.08 : 0)
+            .contentShape(.hoverEffect, Circle())
+            .hoverEffect(tappable ? .highlight : .automatic, isEnabled: tappable)
             Text(label).font(.system(size: max(11, size * 0.26), weight: .medium)).foregroundStyle(value < 0.25 ? Color.red : .secondary)
         }
     }
@@ -110,8 +114,8 @@ struct StatusCard: View {
                     let items = Needs.list(p)
                     ForEach(0..<items.count, id: \.self) { i in
                         // 고리를 보고 집으면 그 욕구의 지금과 앞으로 (아이폰·메인 메뉴와 같은 글)
-                        Button { s.showRing(NeedInfo.key(items[i].0)) } label: { NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 46) }
-                            .buttonStyle(.plain)
+                        Button { s.showRing(NeedInfo.key(items[i].0)) } label: { NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 46, tappable: true) }
+                            .buttonStyle(RingPress())
                     }
                 }
                 if let t = s.ringInfo { Text(t).font(.callout).multilineTextAlignment(.center).frame(maxWidth: 560) }

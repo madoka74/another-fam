@@ -272,6 +272,11 @@ final class Dog {
     private func face(_ p: SIMD3<Float>, _ dt: Float, rate: Float = 3) -> Bool {
         let want = atan2(p.x - pos.x, p.z - pos.z)
         let dy = Q.adiff(want, yaw)
+        if act == .held {
+            // 안겨 있을 땐 다리를 디딜 일이 없음 — 그냥 몸을 돌림
+            yaw += max(-rate * dt, min(rate * dt, dy))
+            return abs(dy) < 0.25
+        }
         let standing = anim.posture == standName || anim.moving
         if !standing {
             if abs(dy) < 1.1 { return abs(dy) < 0.6 }
@@ -436,7 +441,8 @@ final class Dog {
                     region = l.y < headC.y - 0.015 ? "chin" : "head"
                 } else if db < 0.098 {
                     touch = true
-                    if region.isEmpty { region = l.y > c.y + 0.01 ? "back" : "belly" }
+                    // 배는 몸 아래로 손이 들어갔을 때만 (0.10.0: 옆구리를 쓰다듬어도 배로 쳐서 매번 배를 보였음)
+                    if region.isEmpty { region = l.y > c.y + 0.01 ? "back" : (l.y < c.y - 0.03 ? "belly" : "side") }
                 }
             }
             if touch && simd_length(h.vel - velo) > 2.2 { fastHit = true }
@@ -472,7 +478,12 @@ final class Dog {
         if hold { heldT += dt; unheldT = 0 } else { unheldT += dt; if unheldT > 0.35 { heldT = 0 } }
         if act == .held {
             if hold {
-                let want = SIMD3<Float>(mid.x, mid.y + 0.012 - 0.105 * g * anim.growth.legY, mid.z)
+                var want = SIMD3<Float>(mid.x, mid.y + 0.012 - 0.105 * g * anim.growth.legY, mid.z)
+                // 눈에 너무 가까이 오지 않게 (비전프로는 눈앞 아주 가까운 것을 잘라 그려서, 얼굴 앞에 바짝 들면
+                // 털·살갗이 잘려 나가고 그보다 안쪽의 눈알·혀만 보였음 — 0.10.0 의 가림 끄기로는 안 고쳐짐)
+                let minD: Float = 0.30 + 0.12 * g
+                let off = want - s.userPos
+                if simd_length(off) < minD { want = s.userPos + simd_normalize(off + SIMD3<Float>(s.userFwd.x, 0, s.userFwd.z) * 1e-3) * minD }
                 pos += (want - pos) * min(1, dt * 14)
                 _ = face(s.userPos, dt, rate: 2)
             } else if unheldT > 0.35 {
@@ -1354,39 +1365,87 @@ final class Dog {
             strokes += dt
             if brush { p.clean = min(1, p.clean + 0.03 * dt); if s.now > nextVoice { nextVoice = s.now + 0.7; fx("brush", gain: -18) } }
             if foam > 0 { foam = max(0, foam - 0.09 * dt); p.clean = min(1, p.clean + 0.12 * dt); if foam == 0 { pet = p; begin(.idle, for: 2); anim.setPosture("stand"); anim.play("shake"); return } }
-            // 닿은 곳·자세에 맞는 반응
+            // 한 번 쓰다듬는 동안의 '받는 모습'을 그때그때 정함 (0.10.1: 0.10.0 까지는 닿은 곳으로만 정해 늘 같은 몇 가지였고,
+            // 옆구리도 배로 쳐서 몇 초면 거의 매번 배를 보였음). 나이·유대·기운·기분에 따라 다르고, 배 보이기는 드물게
+            if petStyle.isEmpty { petStyle = pickPetStyle(p) }
             let want: String
             switch anim.posture {
             case "belly": want = "belly_rub"
-            case "down", "rest", "side", "curl", "sploot", "down_alert": want = "pet_down"
+            case "side": want = "pet_side"
+            case "down", "rest", "curl", "sploot", "down_alert": want = "pet_down"
+            case "sit", "sit_lazy":
+                want = touchRegion == "chin" ? "pet_chin" : (petStyle == "sit_lean" ? "pet_sit_lean" : "pet_head")
             default:
-                if touchRegion == "head" { want = "pet_head" }
-                else if touchRegion == "chin" { want = "pet_chin" }
-                else if touchRegion == "belly" && p.bond > 0.4 && stage != .senior && strokes > 4 { want = "belly" }
-                else { want = strokes > 6 && p.bond > 0.3 ? "lean" : "pet_back" }
+                switch petStyle {
+                case "sit", "sit_lean": want = "sitdown"
+                case "down": want = "liedown"
+                case "side": want = "sidedown"
+                case "belly" where touchRegion == "belly" || strokes > 5: want = "belly"
+                case "wiggle": want = "wiggle"
+                default:
+                    if touchRegion == "head" { want = "pet_head" }
+                    else if touchRegion == "chin" { want = "pet_chin" }
+                    else { want = strokes > 4 && p.bond > 0.3 ? "lean" : "pet_back" }
+                }
             }
-            if want == "belly" { strokes = 0; anim.stop(); anim.setPosture("belly") }
-            else if anim.settled || (anim.busy && anim.current != want && anim.current.hasPrefix("pet_")) || (anim.current == "lean" && want != "lean") {
-                if anim.current != want { anim.hold(want) }
+            switch want {
+            case "belly": strokes = 0; lastBellyAt = s.now; anim.stop(); anim.setPosture("belly")
+            case "sitdown": if strokes > 1.2 && !anim.busy { anim.setPosture("sit") }
+            case "liedown": if strokes > 2 && !anim.busy { anim.setPosture("down") }
+            case "sidedown": if strokes > 2.5 && !anim.busy { anim.setPosture("side") }
+            default:
+                if anim.settled || (anim.busy && anim.current != want && anim.current.hasPrefix("pet_")) || (anim.current == "lean" && want != "lean") {
+                    if anim.current != want { anim.hold(want) }
+                }
             }
             if s.now > nextVoice && strokes > 1.5 {
                 nextVoice = s.now + Double.random(in: 2.5...5.5)
                 let r = Float.random(in: 0...1)
                 let young = stage == .social || stage == .juvenile
-                if (touchRegion == "head" || touchRegion == "chin") && young && r < 0.3 { anim.overlay("nibble"); fx("chew", gain: -26) }      // 어린 강아지는 손가락을 살살 깨묾
-                else if (touchRegion == "head" || touchRegion == "chin") && p.bond > 0.3 && r < 0.55 { anim.overlay("lick"); fx("lick", gain: -20) }  // 손을 핥음
-                else if r < 0.75 { fx("sigh", gain: -20); anim.overlay("blink_slow") }
+                if (touchRegion == "head" || touchRegion == "chin") && young && r < 0.25 { anim.overlay("nibble"); fx("chew", gain: -26) }      // 어린 강아지는 손가락을 살살 깨묾
+                else if (touchRegion == "head" || touchRegion == "chin") && p.bond > 0.3 && r < 0.45 { anim.overlay("lick"); fx("lick", gain: -20) }  // 손을 핥음
+                else if r < 0.6 { fx("sigh", gain: -20); anim.overlay("blink_slow") }
+                else if r < 0.7 { anim.overlay(Bool.random() ? "tilt_l" : "tilt_r") }
+                else if r < 0.78 { anim.overlay("nuzzle") }                  // 손에 얼굴을 비빔
+                else if r < 0.84 && anim.posture != "belly" { anim.overlay("look_up") }
+                else if r < 0.88 { anim.overlay("yawn") }
                 else { say("whimper", gain: -22) }        // 좋아서 내는 가는 소리
             }
         } else if untouchT > 1.3 {
             pet = p
+            let was = anim.posture
             anim.stop()
             strokes = 0
+            petStyle = ""
             begin(.idle, for: 1.5)
-            if p.love < 0.6 && !baby { anim.overlay("nuzzle") }
+            // 끝나는 모습도 여러 가지: 몸 털기·기지개·손 쪽으로 더 비비기·더 해 달라고 앞발·그대로 쉬기
+            let r = Float.random(in: 0...1)
+            if was == "belly" || was == "side" { if r < 0.5 { anim.setPosture("down") } }
+            else if r < 0.22 && was == standName { anim.play("shake", then: standName); fx("shake", gain: -16) }
+            else if r < 0.36 && was == standName { anim.play("stretch_front", then: standName) }
+            else if r < 0.5 && p.bond > 0.3 && (was == "sit" || was == standName) { anim.play("paw_at", then: standName) }
+            else if r < 0.7 && p.love < 0.8 { anim.overlay("nuzzle") }
+            else if r < 0.8 { anim.overlay("lick_lips") }
             return
         }
         pet = p
+    }
+
+    private var petStyle = ""
+    private var lastBellyAt: Double = -999
+
+    /// 이번 쓰다듬기를 받는 모습 (서서 기댐·앉음·앉아 기댐·엎드림·옆으로 누움·꼬리 치며 꼼지락·배 보이기)
+    private func pickPetStyle(_ p: PetState) -> String {
+        var w: [(String, Float)] = [("stand", 1.0), ("sit", 1.0), ("sit_lean", 0.8 * p.bond + 0.2), ("down", 0.6 + (1 - p.energy))]
+        if stage == .social || stage == .juvenile || stage == .adolescent { w.append(("wiggle", 0.8 * p.energy)) }
+        if stage != .senior { w.append(("side", 0.25 + 0.5 * p.bond)) }
+        else { w.append(("down", 1.0)) }
+        // 배 보이기: 유대가 깊고, 배를 만지고 있고, 최근 8분 안에 하지 않았을 때만 드물게
+        if stage != .senior && p.bond > 0.5 && touchRegion == "belly" && s.now - lastBellyAt > 480 { w.append(("belly", 0.35)) }
+        let total = w.reduce(0) { $0 + $1.1 }
+        var r = Float.random(in: 0..<max(0.01, total))
+        for (k, v) in w { r -= v; if r <= 0 { return k } }
+        return "stand"
     }
 
     // MARK: 내민 손

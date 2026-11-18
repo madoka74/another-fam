@@ -134,9 +134,9 @@ struct HomeTab: View {
                     ForEach(0..<items.count, id: \.self) { i in
                         let k = NeedInfo.key(items[i].0)
                         Button { if info?.key == k { info = nil } else { info = (k, NeedInfo.text(p, k)) } } label: {
-                            NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 64)
+                            NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 64, tappable: true)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(RingPress())
                     }
                 }
                 .padding(.vertical, 8)
@@ -222,39 +222,81 @@ struct StorageTab: View {
             ScrollView {
                 VStack(spacing: 10) {
                     ForEach(own) { it in
-                        HStack(spacing: 14) {
-                            Image(systemName: it.icon).font(.title2).frame(width: 44)
-                            Text(it.name).font(.headline)
-                            Text(it.permanent ? "" : "\(p.count(it.id))\(it.unit)").font(.callout).foregroundStyle(.secondary)
-                            Spacer()
-                            if StorageTab.instant.contains(it.id) {
-                                Button("쓰기") { model.useNow(it.id) }.frame(width: 110)
-                            } else if it.id == "leash" || it.id == "formula" {
-                                EmptyView()
-                            } else if it.cat == .food && it.id != "treat" && it.id != "dental" {
-                                // 사료: 봉지를 손 앞에 꺼냄 → 밥그릇 위에서 기울여 부음
-                                Button("꺼내기") { model.takeOut(it.id) }.frame(width: 110).disabled(p.count(it.id) == 0)
-                            } else if it.id == "pad" {
-                                // 패드: 한 장을 손 앞에 꺼냄 → 바닥에 놓으면 깔리고(있던 것은 걷힘), 오줌에 대고 문지르면 닦임
-                                HStack(spacing: 8) {
-                                    Button("꺼내기") { model.takeOut("pad") }.frame(width: 100).disabled(p.count("pad") == 0)
-                                    if model.session?.isOut("pad") == true { Button("걷기") { model.putBack("pad") }.frame(width: 90) }
-                                }
-                            } else if it.id == "bag" {
-                                Button("꺼내기") { model.takeOut("bag") }.frame(width: 110).disabled(p.count("bag") == 0)
-                            } else if Catalog.placeable.contains(it.id) || StorageTab.handy.contains(it.id) {
-                                let out = model.session?.isOut(it.id) == true
-                                Button(out ? "넣기" : "꺼내기") { out ? model.putBack(it.id) : model.takeOut(it.id) }.frame(width: 110)
-                            }
-                        }
-                        .padding(.horizontal, 18).padding(.vertical, 10)
-                        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
+                        let (a, b) = buttons(it, p)
+                        row(it.icon, it.name, it.permanent ? "" : "\(p.count(it.id))\(it.unit)", a, b)
+                    }
+                    // 물병: 물은 공짜라 보관함 물건이 아니지만 꺼내고 넣을 수 있어야 함
+                    if model.session != nil && p.age() >= 21 {
+                        let out = model.session?.isOut("jug") == true
+                        row("waterbottle.fill", "물병", "", out ? nil : take("jug", true), out ? put("jug") : nil)
                     }
                     if own.isEmpty { Text("비어 있어요").foregroundStyle(.secondary).padding(40) }
                 }
             }
             .padding(32)
         }
+    }
+}
+
+extension StorageTab {
+    struct Act { let title: String; let on: Bool; let run: () -> Void }
+
+    /// 단추 두 칸: 왼쪽 칸은 늘 '꺼내기'·'쓰기', 오른쪽 칸은 늘 '넣기' — 같은 글자는 같은 자리, 단추 크기는 모두 같게 (0.10.1)
+    func buttons(_ it: Item, _ p: PetState) -> (Act?, Act?) {
+        let s = model.session
+        if StorageTab.instant.contains(it.id) { return (Act(title: "쓰기", on: true, run: { model.useNow(it.id) }), nil) }
+        if it.id == "leash" || it.id == "formula" { return (nil, nil) }
+        if it.cat == .food && it.id != "treat" && it.id != "dental" {
+            // 사료: 사료 봉지를 손 앞에 꺼냄 / 꺼낸 봉지를 넣음
+            let out = s?.isOut("foodbag") == true
+            return (out ? nil : take(it.id, p.count(it.id) > 0), out ? put(it.id) : nil)
+        }
+        if it.id == "pad" {
+            // 패드: 새 한 장을 손 앞에 꺼냄 / 깔린 패드(와 손에 든 패드)를 걷어 넣음
+            let held = s?.isOut("padsheet") == true
+            let out = s?.isOut("pad") == true || held
+            return (take("pad", p.count("pad") > 0 && !held), out ? put("pad") : nil)
+        }
+        if it.id == "bag" {
+            let out = s?.isOut("bag") == true
+            return (out ? nil : take("bag", p.count("bag") > 0), out ? put("bag") : nil)
+        }
+        if Catalog.placeable.contains(it.id) || StorageTab.handy.contains(it.id) {
+            let out = s?.isOut(it.id) == true
+            return (out ? nil : take(it.id, true), out ? put(it.id) : nil)
+        }
+        return (nil, nil)
+    }
+
+    func take(_ id: String, _ on: Bool) -> Act? { Act(title: "꺼내기", on: on, run: { model.takeOut(id) }) }
+    func put(_ id: String) -> Act? { Act(title: "넣기", on: true, run: { model.putBack(id) }) }
+
+    func row(_ icon: String, _ name: String, _ count: String, _ a: Act?, _ b: Act?) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon).font(.title2).frame(width: 44)
+            Text(name).font(.headline)
+            Text(count).font(.callout).foregroundStyle(.secondary)
+            Spacer()
+            slot(a)
+            slot(b)
+        }
+        .padding(.horizontal, 18).padding(.vertical, 10)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    @ViewBuilder func slot(_ x: Act?) -> some View {
+        Group {
+            if let x { Button(action: x.run) { Text(x.title).frame(width: 84) }.disabled(!x.on) }
+            else { Color.clear.frame(width: 84, height: 1) }
+        }
+        .frame(width: 124)
+    }
+}
+
+/// 고리 단추: 시스템의 네모난 포커스 대신 고리 둘레만 은은하게 밝아짐 (0.10.1)
+struct RingPress: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.scaleEffect(configuration.isPressed ? 0.94 : 1).animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 

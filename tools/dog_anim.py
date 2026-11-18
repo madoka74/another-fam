@@ -417,6 +417,10 @@ hold("pet_head", S(SIT, nk=(.0, 0, 0), hd=(-.12, 0, 0), lid=.75, ear=(.1, .3), w
 hold("pet_back", S(dy=-.01, sp=(-.08, 0, 0), nk=(-.2, 0, 0), hd=(.1, 0, 0), lid=.5, tail=(.25, .1), wag=.9), 2.0, mod=chain(osc("sp", .05, 1., idx=1), osc("dy", .003, 1.)), tag="pet")
 hold("pet_chin", S(SIT, nk=(-.35, 0, 0), hd=(-.3, 0, 0), lid=.8, wag=.7), 2.0, mod=osc("hd", .05, .7, idx=2), tag="pet")
 hold("pet_down", S(DOWN, nk=(.1, 0, 0), hd=(.15, 0, .15), lid=.8, wag=.5), 2.0, tag="pet")
+# 옆으로 툭 누워 쓰다듬기를 즐김 (0.10.1): 눈을 가늘게, 꼬리를 바닥에 살랑, 숨에 따라 배가 오르내림
+hold("pet_side", S(SIDE, lid=.75, wag=.35, hd=(.1, 0, .05)), 2.4, mod=chain(osc("dy", .002, .45), osc("tail", .25, 1.1, idx=1)), tag="pet")
+# 앉아서 손에 머리를 기댐 (고개를 손 쪽으로 밀며 눈을 감음)
+hold("pet_sit_lean", S(SIT, nk=(.05, .18, .12), hd=(-.05, .25, .25), lid=.85, ear=(.05, .35), wag=.7), 2.2, mod=osc("hd", .06, .9, idx=1), tag="pet")
 
 # ---------------- 머리 겹치기 동작 (서 있는 자세 기준 차이만 씀) ----------------
 def head(name, steps, loop=False, mod=None, events=()):
