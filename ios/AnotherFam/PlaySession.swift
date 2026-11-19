@@ -834,11 +834,12 @@ final class PlaySession {
             }
         }
         room.nav.extra = ex
-        // 가림 그물: 강아지를 안거나 아주 가까이 있을 때는 끔 — 내 몸·다리가 스캔돼 생긴 가림 면이 강아지 몸을 잘라
-        // 속의 눈·혀만 보였음 (0.9)
+        // 가림 그물: 강아지를 안고 있을 때만 끔 (안은 강아지는 늘 내 앞이라 가릴 것이 없고, 내 몸 스캔 면에 잘리지 않게).
+        // 0.10.3 까지는 강아지가 75cm 안이거나 만지기만 해도 방 전체의 가림을 꺼서, 소파에 앉아 곁에 강아지가 있으면
+        // 소파·가구 뒤의 그릇·패드·강아지까지 모두 가구를 뚫고 보였음. 속의 눈·혀가 보이던 진짜 원인(눈앞 잘림)은 0.10.1 에서 고침
         if let d = dog {
-            let near = d.holding || d.touching || simd_distance(d.bodyWorld, userPos) < 0.75
-            if room.occlusion == near { room.occlusion = !near }
+            let off = d.holding
+            if room.occlusion == off { room.occlusion = !off }
         }
         live(dt)
         hands(dt)

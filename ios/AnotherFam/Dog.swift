@@ -25,6 +25,9 @@ final class Dog {
     private var pathGoal = SIMD2<Float>(9e9, 9e9)
     private var repathAt: Double = 0
     private var stuckN = 0
+    private var goalRef = SIMD2<Float>(9e9, 9e9), bestD: Float = 0, bestAt: Double = 0   // 다가가는지 감시
+    private var clipName = "", clipSince: Double = 0                                       // 같은 되풀이 동작 감시
+    private var turnSince: Double = 0, travelSeen: Double = 0
     private var lastPos = SIMD3<Float>(0, 0, 0)
     private var velo = SIMD3<Float>(0, 0, 0)
 
@@ -230,6 +233,13 @@ final class Dog {
         if anim.posture != standName { anim.setPosture(standName); return 0 }
         if !anim.moving && anim.busy { return 0 }
         let nav = s.room.nav
+        // 다가가지 못하는 채 4초: 포기 (0.10.3 까지: 가구 가장자리에서 길 점을 맴돌거나 막힌 걸음을 되풀이하며
+        // 제자리에서 빙글빙글 돌았고, 손뼉 등으로 할 일이 바뀌어야 멈췄음)
+        if s.now - travelSeen > 0.5 { bestD = d; bestAt = s.now }   // 동작을 기다리느라 쉰 시간은 세지 않음
+        travelSeen = s.now
+        if simd_distance(goalRef, t) > 0.2 { goalRef = t; bestD = d; bestAt = s.now }
+        if d < bestD - 0.08 { bestD = d; bestAt = s.now }
+        if s.now - bestAt > 4 { bestAt = s.now; bestD = d; stopMoving(); stuckN = 0; return -1 }
         if path.isEmpty || simd_distance(pathGoal, t) > 0.2 || s.now > repathAt {
             guard nav.ready, let p = nav.path(from: xz, to: t) else {
                 stuckN += 1
@@ -238,6 +248,8 @@ final class Dog {
             }
             path = p; pathGoal = t; repathAt = s.now + 1.5
         }
+        // 이미 지나친 길 점은 건너뜀 (다음 점 쪽으로 넘어섰으면 되돌아가 맴돌지 않게)
+        if path.count > 1, simd_dot(path[1] - path[0], xz - path[0]) > 0, simd_distance(xz, path[0]) < 0.3 { path.removeFirst() }
         guard let wp = path.first else { return 1 }
         let dv = wp - xz
         let dw = simd_length(dv)
@@ -248,17 +260,26 @@ final class Dog {
         }
         let want = atan2(dv.x, dv.y)
         let dy = Q.adiff(want, yaw)
-        let turn: Float = (baby ? 1.2 : (stage == .senior ? 2.2 : 4.5)) * dt
+        let omega: Float = baby ? 1.2 : (stage == .senior ? 2.2 : 4.5)
+        let turn: Float = omega * dt
         yaw += max(-turn, min(turn, dy))
         let level = d > 2.0 ? fast : (d > 0.8 ? min(fast, 1) : 0)
         anim.setGait(gaitName(level))
-        let align: Float = abs(dy) < 0.5 ? 1 : max(0, cos(dy)) * 0.5
-        let step: Float = min(dw, anim.speed * dt * align)
-        let np = xz + SIMD2<Float>(sin(yaw), cos(yaw)) * step
+        // 크게 틀어져 있으면 먼저 돌고, 가까운 점은 그 거리 안에서 돌 수 있는 빠르기로 (돌기 반경 = 빠르기 ÷ 도는 빠르기)
+        // — 0.10.3 까지는 반쯤 돈 채 제 빠르기로 걸어 가까운 길 점 둘레를 계속 맴돌 수 있었음
+        let align: Float = abs(dy) < 0.35 ? 1 : (abs(dy) < 0.9 ? max(0, cos(dy)) * 0.45 : 0)
+        let v = min(anim.speed, omega * max(dw, 0.05) * 0.9)
+        let step: Float = min(dw, v * dt * align)
+        let dir = SIMD2<Float>(sin(yaw), cos(yaw))
+        let np = xz + dir * step
         if nav.open || nav.walkable(np.x, np.y) || !nav.walkable(pos.x, pos.z) {
             pos.x = np.x; pos.z = np.y
             stuckN = 0
-        } else {
+        } else if step > 0, nav.walkable(xz.x + dir.x * step, xz.y), abs(dv.x) > 0.01 {
+            pos.x += dir.x * step                              // 막힌 쪽은 미끄러지듯 비켜 감 (모서리에 걸리지 않게)
+        } else if step > 0, nav.walkable(xz.x, xz.y + dir.y * step), abs(dv.y) > 0.01 {
+            pos.z += dir.y * step
+        } else if step > 0 {
             path.removeAll()
             stuckN += 1
             if stuckN > 20 { stopMoving(); return -1 }
@@ -357,6 +378,30 @@ final class Dog {
             pos.x += push.x / pl * m
             pos.z += push.y / pl * m
         }
+    }
+
+    /// 같은 되풀이 동작이 비현실적으로 길게 이어지지 않게 (0.10.4):
+    /// ① 걸음 없이 제자리에서 몸만 도는 걸음(turnGait)이 3초 넘으면 멈춤
+    /// ② 놀이·조르기·땅 파기 같은 되풀이 동작이 정한 시간보다 길면 끝내고 다른 일을 고름
+    ///    (잠·먹기·마시기·씹기·안기기·쓰다듬기처럼 끝나는 때가 따로 있는 것은 제외)
+    private func watchLoops() {
+        if turnGait && path.isEmpty {
+            if turnSince == 0 { turnSince = s.now }
+            else if s.now - turnSince > 3 { turnSince = 0; turnGait = false; turning = false; anim.setGait(nil) }
+        } else { turnSince = 0 }
+        let c = anim.current
+        if c != clipName { clipName = c; clipSince = s.now; return }
+        let limit: Double
+        switch c {
+        case "shake_toy", "bow_wiggle", "greet_jump", "dig", "spin_l", "spin_r", "alert", "belly_wriggle": limit = 8
+        case "wiggle", "beg_paws", "sniff_ground", "nb_root", "nb_squirm": limit = 12
+        case "lick_paw", "tug": limit = 25
+        default: return
+        }
+        guard s.now - clipSince > limit, act != .held, act != .petted else { return }
+        clipSince = s.now
+        anim.stop()
+        if act != .sleep && act != .eat && act != .drink && act != .potty { begin(.idle, for: Double.random(in: 1...3)) }
     }
 
     /// 삑삑이: 무는 대로 삑삑 (한 번 물 때 1~3번) + 입도 그만큼 깨묾
@@ -599,6 +644,7 @@ final class Dog {
             }
         }
         clearBody()
+        watchLoops()
         var tilt: Float = 0
         if act != .held && act != .fall && act != .perch {
             let L: Float = 0.12 * g
@@ -1373,7 +1419,7 @@ final class Dog {
                 // 엎드려 씹기·껴안고 핥기 (씹는 뼈는 오래)
                 anim.setPosture("down")
                 anim.hold(t.id == "blanky" ? "lick_paw" : "chew")
-                phase = 3; until = s.now + (t.id == "chewbone" ? Double.random(in: 20...45) : Double.random(in: 8...18))
+                phase = 3; until = s.now + (t.id == "chewbone" ? Double.random(in: 15...30) : Double.random(in: 8...18))
                 nextVoice = s.now + 0.6
             } else {
                 pickUp(t)

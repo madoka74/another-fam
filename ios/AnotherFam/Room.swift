@@ -422,6 +422,7 @@ final class Room {
     private var rasterBusy = 0
     private var epoch = 0
     private var occAt: [UUID: Double] = [:]
+    private var occLater: Set<UUID> = []
 
     private func enqueue(_ id: UUID) {
         if !rasterQ.contains(id) { rasterQ.append(id) }
@@ -447,9 +448,20 @@ final class Room {
         guard !ended else { return }
         if ep != epoch { enqueue(id); return }
         nav.update(id, floorCells: r.floor, blockCells: r.block)
-        // 가림 그물은 3초에 한 번만 새로 (그물 만들기는 메인에서 해야 함)
+        // 가림 그물은 1.5초에 한 번만 새로 (그물 만들기는 메인에서 해야 함) — 처음 스캔된 조각은 바로
         let now = CACurrentMediaTime()
-        guard now - (occAt[id] ?? 0) > 3 else { return }
+        guard occluders[id] == nil || now - (occAt[id] ?? 0) > 1.5 else {
+            // 건너뛴 마지막 모양이 묵지 않게 잠시 뒤 한 번 더 (0.10.3 까지는 3초 안에 온 마지막 모양을 버려 옛 가림이 남았음)
+            if !occLater.contains(id) {
+                occLater.insert(id)
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_700_000_000)
+                    self.occLater.remove(id)
+                    if !self.ended { self.enqueue(id) }
+                }
+            }
+            return
+        }
         occAt[id] = now
         guard r.occIdx.count >= 3 else { occluders[id]?.isEnabled = false; return }
         var d = MeshDescriptor(name: "occ")
@@ -621,10 +633,12 @@ struct RasterJob: Sendable {
                 }
             }
         }
-        // 가림: 면을 안쪽으로 2.5cm 물려 (스캔 오차로 발·털이 잘리지 않게) 현실 가구 뒤의 개를 가림. 바닥은 뺌
+        // 가림: 현실 가구 뒤의 개·물건을 가림. 바닥은 뺌.
+        // 위를 향한 면(소파 앉는 면 등, 강아지가 딛는 곳)만 2.5cm 물려 발·털이 잘리지 않게 하고, 옆·아래를 향한 면은 0.8cm 만 물림
+        // (0.10.3 까지: 모든 면을 2.5cm 물려 가구 둘레 2.5cm 띠로 뒤의 것이 비쳐 보였음)
         if out.occIdx.count >= 3 {
             var op = pos
-            for i in 0..<op.count { op[i] -= nrm[i] * 0.025 }
+            for i in 0..<op.count { op[i] -= nrm[i] * (nrm[i].y > 0.7 ? 0.025 : 0.008) }
             out.occPos = op
         }
         return out
