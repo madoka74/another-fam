@@ -312,6 +312,77 @@ final class Dog {
         return y
     }
 
+    /// 몸이 그릇·계단·똥을 뚫고 서지 않게: 몸통(엉덩이~가슴 선분 + 반폭)이 겹치면 겹친 만큼 바깥으로 밀어냄.
+    /// 길찾기는 몸 가운데 한 점만 피해서, 멈춰 선 자리·돌 때·먹는 그릇 옆 다른 그릇·사람을 따라올 때 몸이 그릇을 걸쳤음 (0.10.3)
+    private func clearBody() {
+        guard act != .held && act != .fall && act != .perch && onPerch == nil else { return }
+        let f2 = SIMD2<Float>(fwd.x, fwd.z)
+        let a = xz - f2 * (0.13 * g), b = xz + f2 * (0.14 * g)
+        let wid: Float = 0.055 * g
+        var push = SIMD2<Float>(0, 0)
+        for p in s.props where p.heldBy == nil && !p.inMouth {
+            // 지금 먹고 마시는 그릇은 입을 그릇 위로 맞추는 동작(mealStep)이 자리를 잡음 — 옆의 다른 그릇은 피함
+            if (act == .eat || act == .drink) && p === target { continue }
+            let c = SIMD2<Float>(p.pos.x, p.pos.z)
+            switch p.id {
+            case "bowl_food", "bowl_water", "poop":
+                let rr: Float = p.id == "poop" ? 0.035 : 0.085
+                let ab = b - a
+                let t = max(0, min(1, simd_dot(c - a, ab) / max(1e-6, simd_dot(ab, ab))))
+                let q = a + ab * t
+                let d = q - c, dl = simd_length(d), need = rr + wid
+                if dl < need {
+                    let n = dl > 1e-4 ? d / dl : SIMD2<Float>(-f2.y, f2.x)
+                    push += n * (need - dl)
+                }
+            case "steps":
+                // 계단: 실제 상자(36×50cm) 밖으로
+                for k in 0...2 {
+                    let w = k == 0 ? a : (k == 1 ? xz : b)
+                    let l = p.entity.convert(position: SIMD3<Float>(w.x, p.pos.y, w.y), from: nil)
+                    let hx: Float = 0.18 + wid, hz: Float = 0.25 + wid
+                    guard abs(l.x) < hx && abs(l.z) < hz else { continue }
+                    let ox = hx - abs(l.x), oz = hz - abs(l.z)
+                    let lo = ox < oz ? SIMD3<Float>(l.x < 0 ? -ox : ox, 0, 0) : SIMD3<Float>(0, 0, l.z < 0 ? -oz : oz)
+                    let wv = p.entity.convert(direction: lo, to: nil)
+                    push += SIMD2<Float>(wv.x, wv.z)
+                    break
+                }
+            default: continue
+            }
+        }
+        let pl = simd_length(push)
+        if pl > 1e-4 {
+            let m = min(pl, 0.25)                          // 한 번에 너무 튀지 않게
+            pos.x += push.x / pl * m
+            pos.z += push.y / pl * m
+        }
+    }
+
+    /// 삑삑이: 무는 대로 삑삑 (한 번 물 때 1~3번) + 입도 그만큼 깨묾
+    private func squeakBurst(_ n: Int) {
+        var env: [Float] = []
+        for k in 0..<n {
+            squeakQ.append(s.now + Double(k) * 0.17 + Double.random(in: 0...0.04))
+            env += [0.3, 0.8, 1, 0.9, 0.5, 0.2, 0, 0, 0, 0]
+        }
+        anim.speak(env, rate: 1)
+    }
+    private var squeakQ: [Double] = []
+    private var nextSqueak: Double = 0
+    private var ballNudges = 0
+
+    /// 사람이 손으로 삑삑이를 쥠: 귀 쫑긋하고 돌아봄, 놀 기분이면 달려옴
+    func heardSqueak(_ p: Prop) {
+        if baby || stage.rawValue < Stage.social.rawValue { if act != .sleep { anim.overlay("ear_perk") }; return }
+        if act == .sleep { if pet.energy > 0.5 && Float.random(in: 0...1) < 0.3 { begin(.idle, for: 1.5); anim.play("wake", then: "down"); pet.asleep = false }; return }
+        guard act == .idle || act == .wander || act == .watch || act == .ask || act == .come else { return }
+        anim.overlay(Bool.random() ? "tilt_l" : "tilt_r")
+        if simd_distance(p.pos, pos) > 1.2 && pet.energy > 0.25 && Float.random(in: 0...1) < 0.5 + 0.4 * pet.bond {
+            begin(.come); phase = 0
+        }
+    }
+
     /// 안겨 있는지 (손이 강아지를 가리지 않게 화면에서 손 보이기를 끔)
     var holding: Bool { act == .held }
     /// 이 물건 위에 있는지 (강아지가 올라가 있는 잠자리는 손으로 옮겨지지 않게)
@@ -515,6 +586,19 @@ final class Dog {
         // 높이: 디딘 면에 붙음 (안겼을 때·떨어질 때 빼고)
         // 앞발·뒷발 아래 높이를 따로 봄: 방석 둘레 쿠션처럼 높이가 다른 곳에선 몸을 기울여 넘어감
         // (0.9: 가운데 한 점 높이만 봐서 쿠션을 몸 반쯤 파묻힌 채 지나가다 끝에서 갑자기 올라섰음)
+        // 올라가 있던 면(소파 등) 밖으로 끌려 나오면 떨어짐 — 0.10.2 까지: 소파 위에서 장난감을 문 채 끌려 나와,
+        // 높이를 '올라가 있는 면 높이'로만 셈해 소파 밖 공중을 바닥처럼 딛고 섰음
+        if let pc = onPerch, act != .held && act != .fall && act != .perch {
+            let d = pos - pc.center
+            if abs(simd_dot(d, pc.ax)) > pc.half.x + 0.04 || abs(simd_dot(d, pc.az)) > pc.half.y + 0.04 {
+                onPerch = nil
+                if carry != nil { dropCarry(soft: true) }
+                vy = 0
+                begin(.fall)
+                anim.setPosture(standName)
+            }
+        }
+        clearBody()
         var tilt: Float = 0
         if act != .held && act != .fall && act != .perch {
             let L: Float = 0.12 * g
@@ -575,6 +659,14 @@ final class Dog {
             default: if SoundBank.shared.has(e) { fx(e, gain: e == "thump" ? -16 : -20) }
             }
         }
+        // 삑삑이를 물고 있는 동안(들고 다니기·흔들기·당기기·물어 오기) 씹을 때마다 삑 (0.10.2 까지: 주울 때 한 번만 났음)
+        let squeaky = carry?.id == "squeak" || (act == .tug && target?.id == "squeak")
+        if squeaky && s.now > nextSqueak {
+            let rough = anim.current == "shake_toy" || act == .tug
+            nextSqueak = s.now + Double.random(in: rough ? 0.5...1.4 : 1.0...3.0)
+            squeakBurst(Int.random(in: 1...(rough ? 3 : 2)))
+        }
+        while let t = squeakQ.first, s.now >= t { squeakQ.removeFirst(); fx("squeak", gain: -8 - Double.random(in: 0...5)) }
         // 물고 있는 것: 입에 물린 채 고개를 따라 기울고 돎 (길쭉한 것은 가로로 묾, 인형은 옆으로 늘어뜨림)
         if let c = carry {
             let hq = headRotWorld
@@ -856,7 +948,7 @@ final class Dog {
             if let t = toys.randomElement() {
                 target = t
                 bringToUser = p.bond > 0.2 && dUser < 5 && Float.random(in: 0...1) < 0.3 + 0.4 * p.bond      // 물어 와서 놀자고 내려놓음
-                begin(.toy)
+                ballNudges = 0; begin(.toy)
                 return
             }
             if stage.rawValue >= Stage.social.rawValue && stage != .senior && Float.random(in: 0...1) < 0.5 * lively, let q = s.room.nav.randomSpot(near: xz, rMin: 0.8, rMax: 2.5) {
@@ -1242,7 +1334,24 @@ final class Dog {
             _ = face(t.pos, dt)
             if s.now < until { return }
             if simd_distance(SIMD2<Float>(t.pos.x, t.pos.z), xz) > 0.3 + 0.1 * g { phase = 0; return }
-            let chewy = t.id == "chewbone" || t.id == "blanky"
+            // 장난감마다 그 물건다운 놀이 (0.10.3):
+            // 공 = 코·앞발로 툭 쳐서 굴리고 쫓아감, 로프 = 물고 머리를 세게 흔들며 으르렁,
+            // 삑삑이 = 엎드려 씹으며 계속 삑삑 / 물고 흔들며 삑삑, 씹는 뼈 = 앞발로 붙잡고 오래 씹음, 블랭키씨 = 잠자리로 물고 가 껴안음
+            if t.id == "ball" && ballNudges < 3 && Float.random(in: 0...1) < 0.65 {
+                ballNudges += 1
+                anim.play(Bool.random() ? "paw_at" : "pounce", then: "stand")
+                var d = t.pos - pos; d.y = 0
+                let dir = simd_length(d) > 1e-3 ? simd_normalize(d) : fwd
+                let side = SIMD3<Float>(-dir.z, 0, dir.x) * Float.random(in: -0.35...0.35)
+                t.setVelocity(simd_normalize(dir + side) * Float.random(in: 0.7...1.5) + SIMD3<Float>(0, 0.25, 0))
+                fx("bounce", gain: -20)
+                pet.fun = min(1, pet.fun + 0.04)
+                phase = 0; until = s.now + 0.6
+                return
+            }
+            ballNudges = 0
+            let chewy = t.id == "chewbone" || t.id == "blanky" || t.id == "squeak"
+            let chewP: Float = t.id == "chewbone" ? 0.85 : (t.id == "squeak" ? 0.45 : 0.6)
             if bringToUser && stage != .senior {
                 // 물어 와서 사람 발치에 내려놓고 놀자고 조름 (던져 주면 쫓아감)
                 bringToUser = false
@@ -1260,21 +1369,25 @@ final class Dog {
                 pet.fun = min(1, pet.fun + 0.06)
                 return
             }
-            if chewy && Float.random(in: 0...1) < 0.6 {
-                // 엎드려 씹기·껴안고 핥기
+            if chewy && Float.random(in: 0...1) < chewP {
+                // 엎드려 씹기·껴안고 핥기 (씹는 뼈는 오래)
                 anim.setPosture("down")
                 anim.hold(t.id == "blanky" ? "lick_paw" : "chew")
-                phase = 3; until = s.now + Double.random(in: 8...18)
+                phase = 3; until = s.now + (t.id == "chewbone" ? Double.random(in: 20...45) : Double.random(in: 8...18))
+                nextVoice = s.now + 0.6
             } else {
                 pickUp(t)
                 phase = 2; until = s.now + Double.random(in: 3...6)
-                shakeIt = t.id == "ball" || t.id == "squeak"
+                shakeIt = t.id == "rope" || t.id == "squeak" || (t.id == "ball" && Float.random(in: 0...1) < 0.3)
                 if !shakeIt, let q = s.room.nav.randomSpot(near: xz, rMin: 0.6, rMax: 1.8) { spot = q }
             }
             pet.fun = min(1, pet.fun + 0.08)
         case 2:
             if carry == nil { if s.now > until { begin(.idle, for: 1) }; return }       // 아직 무는 중
-            if shakeIt { if !anim.busy { anim.hold("shake_toy") } } else if !anim.busy { _ = travel(dt, to: spot, reach: 0.15, fast: 1) }
+            if shakeIt {
+                if !anim.busy { anim.hold("shake_toy") }
+                if t.id == "rope" && s.now > nextVoice { nextVoice = s.now + Double.random(in: 1.2...2.6); say(age < 90 ? "growl_play_pup" : "growl_play", gain: -18) }
+            } else if !anim.busy { _ = travel(dt, to: spot, reach: 0.15, fast: 1) }
             pet.fun = min(1, pet.fun + 0.01 * dt)
             if s.now > until { anim.stop(); putDown(); phase = 6; until = s.now + 0.8 }
         case 6:
@@ -1292,7 +1405,7 @@ final class Dog {
             }
         default:
             pet.fun = min(1, pet.fun + 0.012 * dt)
-            if s.now > nextVoice && t.id == "squeak" { nextVoice = s.now + Double.random(in: 1.5...4); anim.overlay("squeak_bite") }
+            if s.now > nextVoice && t.id == "squeak" { nextVoice = s.now + Double.random(in: 0.7...2.2); anim.overlay("squeak_bite") }
             if s.now > until { anim.stop(); begin(.idle, for: 2) }
         }
     }
@@ -1307,7 +1420,7 @@ final class Dog {
         guard act == .idle || act == .wander || act == .watch || act == .ask || act == .come else { return }
         anim.overlay("ear_perk")
         target = p
-        begin(.toy)
+        ballNudges = 0; begin(.toy)
         if Float.random(in: 0...1) < 0.35 { bark() }
     }
 

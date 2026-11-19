@@ -760,7 +760,13 @@ final class PlaySession {
             else if p.fill > 0.95 { toast("물그릇이 가득 차 있어요") }
             else if isOut("jug") { toast("물병을 집어 물그릇 위에서 기울여 주세요") }
             else { toast("보관함에서 물병을 꺼내 물그릇 위에서 기울여 주세요") }
-        case "pad": toast(pet.count("pad") > 0 ? "보관함에서 새 패드를 꺼내 바닥에 깔면 갈아져요" : "새 패드가 없어요 · 상점에서 살 수 있어요")
+        case "pad":
+            // 몇 번 썼고 몇 번 남았는지 (패드 한 장 = 3번)
+            let n = p.padUsed
+            let new = pet.count("pad") > 0 ? "보관함에서 새 패드를 꺼내 바닥에 깔면 갈아져요" : "새 패드가 없어요 · 상점에서 살 수 있어요"
+            if n >= 3 { toast("패드를 3번 다 썼어요 · " + new) }
+            else if n == 0 { toast("새 패드예요 · 3번 쓸 수 있어요") }
+            else { toast("패드를 \(n)번 썼어요 · \(3 - n)번 더 쓸 수 있어요") }
         case "poop": toast(pet.count("bag") > 0 || isOut("bag") ? "배변 봉투를 들고 집어 주세요" : "배변 봉투가 필요해요")
         case "pee": toast(pet.count("pad") > 0 || isOut("padsheet") ? "패드를 한 장 꺼내 들고 닦아 주세요" : "닦을 패드가 필요해요")
         default: break
@@ -798,7 +804,9 @@ final class PlaySession {
         // 그릇·계단은 길찾기에서 비켜 감
         var ex: [(c: SIMD2<Float>, r: Float)] = []
         for p in props where p.heldBy == nil {
-            if p.id == "bowl_food" || p.id == "bowl_water" { ex.append((SIMD2<Float>(p.pos.x, p.pos.z), 0.09)) }
+            // 길찾기에선 그릇 둘레 + 강아지 몸 반폭만큼 비켜 감 (0.10.3: 0.09 라 몸이 그릇을 걸치고 지나갔음 — 몸은 Dog.clearBody 가 마저 밀어냄)
+            if p.id == "bowl_food" || p.id == "bowl_water" { ex.append((SIMD2<Float>(p.pos.x, p.pos.z), 0.11)) }
+            else if p.id == "poop" { ex.append((SIMD2<Float>(p.pos.x, p.pos.z), 0.07)) }
             else if p.id == "steps" { ex.append((SIMD2<Float>(p.pos.x, p.pos.z), 0.28)) }
         }
         // 내 몸: 스캔 그물에 사람은 안 잡히므로 머리 자리로 몸이 차지한 바닥을 어림 (0.9: 강아지가 내 몸을 뚫고 와 앉았음).
@@ -997,6 +1005,8 @@ final class PlaySession {
                     p.grabRel = Transform(matrix: handFrame(h).inverse * pm)
                     grabStart[i] = (now, p.pos)
                     lastGrabAt = now
+                    // 삑삑이를 손으로 쥐면 삑 — 강아지가 듣고 돌아봄·달려옴 (0.10.3)
+                    if p.id == "squeak" { SoundBank.shared.play("squeak", on: p.entity, gain: -8); dog?.heardSqueak(p) }
                 }
             }
             wasGrab[i] = grab

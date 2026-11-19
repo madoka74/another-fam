@@ -45,6 +45,13 @@ final class Prop {
     private(set) var spout = SIMD3<Float>(0, 0.1, 0)
     private var content: ModelEntity?
     private var kib: [Entity] = []                  // 사료 알갱이 층 (밥그릇)
+    private var padStains: [ModelEntity] = []       // 패드: 쓸 때마다 하나씩 생기는 얼룩
+    private var padDots: [ModelEntity] = []         // 패드: 흡수 표시 점 3개
+    /// 패드를 쓴 횟수 (0~3)
+    var padUsed: Int { Int((min(1, max(0, fill)) * 3).rounded()) }
+    static func padDotMat(_ wet: Bool) -> RealityKit.Material {
+        wet ? Geo.mat(SIMD3<Float>(0.93, 0.74, 0.22), rough: 0.6) : Geo.mat(SIMD3<Float>(0.95, 0.96, 0.97), rough: 0.6)
+    }
     private var waterLine: ModelEntity?             // 물그릇 벽에 닿은 물 높이 선
     private var waterBuilt: Float = -1              // 물 덩어리를 마지막으로 만든 양
 
@@ -154,14 +161,26 @@ final class Prop {
             // 배변 패드: 파란 방수 테두리 + 누빔 무늬 흡수면
             add(.generateBox(width: 0.46, height: 0.004, depth: 0.34, cornerRadius: 0.002), Geo.mat(SIMD3<Float>(0.50, 0.70, 0.88), rough: 0.6), at: SIMD3<Float>(0, 0.002, 0))
             add(.generateBox(width: 0.41, height: 0.003, depth: 0.29), Geo.fabric("quilt", SIMD3<Float>(0.97, 0.97, 0.96)), at: SIMD3<Float>(0, 0.0052, 0))
+            // 쓸 때마다 자기 자리에 얼룩 하나씩 (3번 쓰면 3개) + 테두리 모서리의 흡수 표시 점 3개(쓸 때마다 하나씩 노랗게)
+            // — 실제 패드의 '젖으면 색이 바뀌는 표시선'처럼. 몇 번 썼고 몇 번 남았는지 패드만 봐도 알 수 있게 (0.10.3)
             var sm = PhysicallyBasedMaterial()
             sm.baseColor = .init(tint: UIColor(red: 0.90, green: 0.80, blue: 0.40, alpha: 1))
             sm.roughness = .init(floatLiteral: 0.7)
             sm.blending = .transparent(opacity: .init(floatLiteral: 0.7))
-            let c = ModelEntity(mesh: Geo.puddle(0.06, seed: 3) ?? .generateBox(size: 0.001), materials: [sm])
-            c.position = SIMD3<Float>(0.03, 0.0072, -0.02)
-            entity.addChild(c)
-            content = c
+            for (k, (at, r)) in [(SIMD3<Float>(0.03, 0.0072, -0.02), Float(0.06)), (SIMD3<Float>(-0.09, 0.0073, 0.05), 0.052), (SIMD3<Float>(0.10, 0.0074, 0.06), 0.048)].enumerated() {
+                let c = ModelEntity(mesh: Geo.puddle(r, seed: 3 + 5 * k) ?? .generateBox(size: 0.001), materials: [sm])
+                c.position = at
+                c.isEnabled = false
+                entity.addChild(c)
+                padStains.append(c)
+            }
+            content = padStains.first
+            for k in 0..<3 {
+                let d = ModelEntity(mesh: .generateCylinder(height: 0.0008, radius: 0.0065), materials: [Prop.padDotMat(false)])
+                d.position = SIMD3<Float>(0.185 - 0.02 * Float(k), 0.0044, 0.1575)
+                entity.addChild(d)
+                padDots.append(d)
+            }
             r = 0.24
             mass = 0.03; bounce = 0
             shape = ShapeResource.generateBox(size: SIMD3<Float>(0.46, 0.012, 0.34)).offsetBy(translation: SIMD3<Float>(0, 0.006, 0))
@@ -481,9 +500,11 @@ final class Prop {
         guard let c = content else { return }
         switch id {
         case "pad", "padsheet":
-            // 새 패드는 깨끗하게 (0.10.0: 꺼낸 패드에 쓰던 패드의 얼룩이 그대로 보였음)
-            c.isEnabled = fill > 0.01
-            c.scale = SIMD3<Float>(repeating: 0.6 + 0.6 * fill)
+            // 새 패드는 깨끗하게 (0.10.0: 꺼낸 패드에 쓰던 패드의 얼룩이 그대로 보였음). 쓴 횟수 = fill·3
+            _ = c
+            let n = padUsed
+            for (k, e) in padStains.enumerated() { e.isEnabled = n > k }
+            for (k, e) in padDots.enumerated() { e.model?.materials = [Prop.padDotMat(k < n)] }
         case "pee":
             c.isEnabled = fill > 0.02
             c.scale = SIMD3<Float>(0.35 + 0.65 * fill, 1, 0.35 + 0.65 * fill)
