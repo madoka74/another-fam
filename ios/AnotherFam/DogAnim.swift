@@ -201,6 +201,7 @@ final class DogAnimator {
             fade = min(1, fade + dt / fadeDur)
             p = Pose.mix(f, p, Q.ss(fade))
         }
+        let base = p
         // 머리 겹치기
         if let o = ov {
             ovT += d
@@ -218,6 +219,7 @@ final class DogAnimator {
             } else if !live { ov = nil }
         }
         extras(&p, dt)
+        guardHead(&p, base: base, dt)
         pose = p
         // 땅에 맞춤 (뛰는 동작은 그대로)
         let (R, T, S) = D.fk(p, growth)
@@ -235,6 +237,30 @@ final class DogAnimator {
     }
 
     /// 늘 얹는 것: 숨·깜빡임·꼬리·귀·바라보기·입·작은 흔들림
+    /// 목·머리 안전장치 (0.10.6): 몸 동작 + 머리 겹치기 + 바라보기 + 목소리가 한꺼번에 더해져도
+    /// ① 목·머리가 몸 동작에 든 각도(또는 목 0.9·머리 0.8 라디안)보다 더 꺾이지 않고
+    /// ② 초당 7 라디안보다 빠르게 돌지 않게 (몸 털기·머리 털기·재채기처럼 원래 빠른 동작은 그대로)
+    private var prevNeck = Q.id, prevHead = Q.id, prevOK = false
+    private func guardHead(_ p: inout Pose, base: Pose, _ dt: Float) {
+        func ang(_ q: simd_quatf) -> Float { 2 * acos(min(1, abs(q.real))) }
+        func cap(_ q: simd_quatf, _ m: Float) -> simd_quatf {
+            let a = ang(q)
+            guard a > m, a > 1e-4 else { return q }
+            return Q.nlerp(Q.id, q, m / a)
+        }
+        p.q[J.neck] = cap(p.q[J.neck], max(0.9, ang(base.q[J.neck]) + 0.05))
+        p.q[J.head] = cap(p.q[J.head], max(0.8, ang(base.q[J.head]) + 0.05))
+        let fast = cur.name.hasPrefix("shake") || ov?.name == "shake_head" || ov?.name == "sneeze" || cur.name == "startle"
+        if prevOK && !fast && dt > 0 {
+            let lim: Float = 7 * dt
+            for (j, prev) in [(J.neck, prevNeck), (J.head, prevHead)] {
+                let d = ang(prev.inverse * p.q[j])
+                if d > lim { p.q[j] = Q.nlerp(prev, p.q[j], lim / d) }
+            }
+        }
+        prevNeck = p.q[J.neck]; prevHead = p.q[J.head]; prevOK = true
+    }
+
     private func extras(_ p: inout Pose, _ dt: Float) {
         // 숨 (잠들면 느리고 깊게)
         let br = asleep ? breathRate * 0.55 : breathRate
@@ -284,18 +310,26 @@ final class DogAnimator {
             p.q[J.root] = p.q[J.root] * Q.ry(0.025 * min(1, amp) * sin(wagPh + 2.6))        // 엉덩이도 살짝
         }
         // 바라보기 (목·머리에 나눠)
+        // 0.10.6: 쓰다듬는 손처럼 바라볼 곳이 머리에 거의 붙어 있으면 방향(atan2)이 손 떨림마다 좌우·앞뒤로 뒤집혀
+        // 목이 무섭게 빠르게 휙휙 돌았음 → 가까울수록·등 뒤일수록 덜 보고(부드럽게 0으로), 고개 돌리는 빠르기에 한도.
+        // 옆으로·배를 보이고 누운 자세는 머리가 바닥에 있어 바라보지 않음
         var want = SIMD2<Float>(0, 0)
-        if let t = look, lookOn > 0, !asleep {
+        let lying = cur.name.hasPrefix("belly") || cur.name.hasPrefix("side") || cur.name.hasPrefix("sleep") || cur.name == "pet_side" || cur.name == "curl"
+        if let t = look, lookOn > 0, !asleep, !lying {
             let h = D.rest[J.head] + SIMD3<Float>(0, p.root.y, 0)
             let d = t - h
             let hz = max(1e-3, (d.x * d.x + d.z * d.z).squareRoot())
-            if d.z > -hz * 0.5 || abs(d.x) > 0.05 {
-                let yaw: Float = max(-1.2, min(1.2, atan2(d.x, d.z)))
-                let pit: Float = max(-0.75, min(0.6, -atan2(d.y, hz)))
-                want = SIMD2<Float>(yaw * lookOn, pit * lookOn)
-            }
+            let rawYaw = atan2(d.x, d.z)
+            let nearW = Q.ss(max(0, min(1, (simd_length(d) - 0.12) / 0.18)))       // 12cm 안: 안 봄, 30cm 밖: 다 봄
+            let backW = Q.ss(max(0, min(1, (2.3 - abs(rawYaw)) / 0.8)))            // 등 뒤(130° 넘음): 안 봄
+            let w = lookOn * nearW * backW
+            let yaw: Float = max(-1.2, min(1.2, rawYaw))
+            let pit: Float = max(-0.75, min(0.6, -atan2(d.y, hz)))
+            want = SIMD2<Float>(yaw * w, pit * w)
         }
-        lookYP += (want - lookYP) * min(1, dt * 6)
+        let step = (want - lookYP) * min(1, dt * 6)
+        let maxStep = 3.0 * dt                                                        // 고개 돌리기 초당 3 라디안까지
+        lookYP += simd_clamp(step, SIMD2<Float>(repeating: -maxStep), SIMD2<Float>(repeating: maxStep))
         if abs(lookYP.x) > 0.005 || abs(lookYP.y) > 0.005 {
             p.q[J.neck] = p.q[J.neck] * Q.ry(lookYP.x * 0.45) * Q.rx(lookYP.y * 0.45)
             p.q[J.head] = p.q[J.head] * Q.ry(lookYP.x * 0.55) * Q.rx(lookYP.y * 0.55)

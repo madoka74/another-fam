@@ -1564,9 +1564,11 @@ final class Dog {
                 if (touchRegion == "head" || touchRegion == "chin") && young && r < 0.25 { anim.overlay("nibble"); fx("chew", gain: -26) }      // 어린 강아지는 손가락을 살살 깨묾
                 else if (touchRegion == "head" || touchRegion == "chin") && p.bond > 0.3 && r < 0.45 { anim.overlay("lick"); fx("lick", gain: -20) }  // 손을 핥음
                 else if r < 0.6 { fx("sigh", gain: -20); anim.overlay("blink_slow") }
+                // 옆으로·배를 보이고 누워 있으면 머리가 바닥에 있어 고개 동작 대신 눈만 가늘게 (0.10.6)
+                else if r < 0.84 && (anim.posture == "belly" || anim.posture == "side") { anim.overlay("blink_slow") }
                 else if r < 0.7 { anim.overlay(Bool.random() ? "tilt_l" : "tilt_r") }
                 else if r < 0.78 { anim.overlay("nuzzle") }                  // 손에 얼굴을 비빔
-                else if r < 0.84 && anim.posture != "belly" { anim.overlay("look_up") }
+                else if r < 0.84 { anim.overlay("look_up") }
                 else if r < 0.88 { anim.overlay("yawn") }
                 else { say("whimper", gain: -22) }        // 좋아서 내는 가는 소리
             }
