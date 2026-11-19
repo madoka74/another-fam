@@ -11,10 +11,9 @@ final class VoiceEar {
     var onWord: ((String) -> Void)?
     private(set) var running = false
     private let worker = SpeechWorker()
-    private var text = ""                 // 지금 말 묶음의 글자 (부분 결과)
-    private var gen = -1                  // 일꾼의 묶음 번호 (바뀌면 새 묶음)
+    private var text = ""                 // 지금 말(한 번 말한 것)의 글자 (부분 결과)
+    private var gen = -1                  // 일꾼의 묶음 번호 (바뀌면 새 말)
     private var changedAt: Double = 0
-    private var used = 0                  // 이 묶음에서 이미 넘긴 낱말 수
 
     /// 최근 알아들은 낱말 (설정에서 마이크가 듣고 있는지 확인용)
     static var recent: [String] = []
@@ -55,37 +54,49 @@ final class VoiceEar {
 
     private func got(_ g: Int, _ s: String, final: Bool) {
         if g != gen {
-            // 새 묶음: 지난 묶음에서 아직 안 넘긴 낱말을 마저 넘기고 새로 셈
-            flush(all: true)
-            gen = g; text = ""; used = 0
+            // 새 묶음: 지난 말이 남아 있으면 마저 넘김
+            if !text.isEmpty { emit(text) }
+            gen = g; text = ""
         }
         if !s.isEmpty && s != text { text = s; changedAt = CACurrentMediaTime() }
-        if final { flush(all: true) }
+        if final, !text.isEmpty { emit(text); text = "" }
     }
 
-    /// 매 화면: 0.5초 넘게 그대로인 낱말을 넘김 (부분 결과는 말하는 중에 고쳐지므로 잠깐 기다림)
+    /// 매 화면: 글자가 0.9초 넘게 그대로면 '한 번 말한 것'이 끝난 것 → 통째로 낱말로 넘기고 듣기를 새로 시작.
+    /// 0.10.4 까지: 4분 동안 한 인식 묶음에 말을 계속 이어 붙이고 '몇 번째 낱말까지 넘겼는지'만 셌음 →
+    /// ① 말하는 도중의 부분 결과('엎')를 낱말로 넘겨 버리고 ② 같은 말을 되풀이하거나 인식기가 앞의 글자를 고쳐 쓰면
+    /// 낱말 수가 늘지 않아 그 뒤의 말을 하나도 넘기지 못했음 ('엎'·'자' 한 번 뒤로 아무것도 안 나온 까닭)
     func tick(now: Double) {
-        guard running, !text.isEmpty else { return }
-        flush(all: now - changedAt > 0.5)
+        guard running, !text.isEmpty, now - changedAt > 0.9 else { return }
+        emit(text)
+        text = ""
+        worker.restart()
     }
 
-    private func flush(all: Bool) {
-        let words = VoiceEar.words(text)
-        let upto = all ? words.count : max(0, words.count - 1)       // 마지막 낱말은 아직 바뀔 수 있음
-        guard upto > used else { return }
-        for w in words[used..<upto] {
+    /// 알아듣기 쉽게 인식기에 미리 알려 줄 말 (재주 말·이름·배운 말)
+    func hint(_ words: [String]) { worker.setHints(words) }
+
+    private func emit(_ t: String) {
+        for w in VoiceEar.words(t) {
             onWord?(w)
             VoiceEar.recent.insert(w, at: 0)
             if VoiceEar.recent.count > 8 { VoiceEar.recent.removeLast() }
         }
-        used = upto
     }
 
     /// 낱말로 자르고 다듬음: 소문자, 문장부호·띄어쓰기 없앰
+    /// 같은 말을 붙여 되풀이한 덩어리('엎드려엎드려엎드려')는 한 낱말로 나눔 (0.10.4 까지는 10자 넘는 덩어리를 버렸음)
     static func words(_ s: String) -> [String] {
-        s.lowercased()
-            .components(separatedBy: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters).union(.symbols))
-            .filter { !$0.isEmpty && $0.count <= 10 }
+        var out: [String] = []
+        for t in s.lowercased().components(separatedBy: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters).union(.symbols)) where !t.isEmpty {
+            if t.count <= 10 { out.append(t); continue }
+            let c = Array(t)
+            for u in 1...6 where c.count % u == 0 {
+                let unit = c[0..<u]
+                if stride(from: 0, to: c.count, by: u).allSatisfy({ c[$0..<($0 + u)] == unit }) { out.append(String(unit)); break }
+            }
+        }
+        return out
     }
 }
 
@@ -102,6 +113,11 @@ final class SpeechWorker: @unchecked Sendable {
     private var gen = 0
     private var stopped = false
     private var tapOn = false
+    private var hints: [String] = []
+
+    /// 지금 말이 끝났으니 다음 말은 새 묶음으로 (q 에서)
+    func restart() { q.async { self.begin() } }
+    func setHints(_ h: [String]) { q.async { self.hints = h } }
 
     func start(_ r: SFSpeechRecognizer, done: @escaping @Sendable (Bool) -> Void) {
         q.async {
@@ -165,6 +181,8 @@ final class SpeechWorker: @unchecked Sendable {
         req.shouldReportPartialResults = true
         if r.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
         req.taskHint = .search                                    // 짧은 낱말 위주
+        req.contextualStrings = hints                             // 재주 말·이름을 먼저 떠올리게 ('엎드려'를 '엎'으로 끊지 않게)
+        req.addsPunctuation = false
         lock.lock(); request?.endAudio(); request = req; lock.unlock()
         task = r.recognitionTask(with: req) { [weak self] res, err in
             guard let self else { return }

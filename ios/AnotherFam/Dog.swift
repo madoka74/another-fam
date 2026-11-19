@@ -1729,7 +1729,7 @@ final class Dog {
         heardWords.append((w, now))
         // 간식으로 가르치는 중이면 들은 말을 잠깐 보여 줌 (마이크가 알아들었는지 바로 알 수 있게)
         if act == .trick || s.props.contains(where: { ($0.id == "treat" || $0.id == "dental") && $0.heldBy != nil }) { s.toast("들었어요 · '\(w)'") }
-        heardWords.removeAll { now - $0.1 > 6 }
+        heardWords.removeAll { now - $0.1 > 15 }
         let name = pet.name.lowercased().replacingOccurrences(of: " ", with: "")
         if name.count >= 2 && w.contains(name) {
             if act == .sleep || act == .held || act == .eat || act == .nurse { if act != .sleep { anim.overlay("ear_perk") }; return }
@@ -1763,11 +1763,10 @@ final class Dog {
     /// 재주를 해서 간식을 받음: 그 재주를 더 익히고, 6초 안에 들은 낱말을 그 재주와 짝지음 (다른 재주와의 짝은 조금 약해짐)
     private func associate(_ k: String, _ p: inout PetState) {
         let v = min(1, (p.tricks[k] ?? 0) + 0.12)
-        let first = (p.tricks[k] ?? 0) < 1 && v >= 1
         p.tricks[k] = v
-        if first { s.toast("'\(Dog.trickTitle(k))'를 익혔어요") }
         let name = p.name.lowercased().replacingOccurrences(of: " ", with: "")
-        let ws = Set(heardWords.filter { s.now - $0.1 < 6 }.map { $0.0 }).filter { name.isEmpty || !$0.contains(name) }
+        // 간식을 먹기 전 15초 안에 들은 말 (0.10.4 까지 6초 — 엎드린 뒤 말하고 간식을 주기까지 넘기 쉬웠음)
+        let ws = Set(heardWords.filter { s.now - $0.1 < 15 }.map { $0.0 }).filter { name.isEmpty || !$0.contains(name) }
         for w in ws {
             var m = p.words[w] ?? [:]
             let before = m[k] ?? 0
@@ -1776,10 +1775,11 @@ final class Dog {
             p.words[w] = m
             // 배우는 만큼 바로 보여 줌 (0.9: 20%·80% 넘을 때만 알려 줘 배우는지 알 수 없었음)
             let v2 = m[k] ?? 0
-            if before < 0.8 && v2 >= 0.8 { s.toast("'\(w)'를 알아들어요 · \(Dog.trickTitle(k))") }
-            else { s.toast("'\(w)' → \(Dog.trickTitle(k)) 배우는 중 \(Int(v2 * 100))%") }
+            // 자세(재주)와 말을 구분해 보여 줌 — 0.10.4 까지는 자세 이름도 '엎드려'라 자세 100% 가 말을 익힌 것처럼 보였음
+            if before < 0.8 && v2 >= 0.8 { s.toast("말 '\(w)' 익힘 → 이제 '\(w)' 하면 \(Dog.trickTitle(k)) 자세를 해요") }
+            else { s.toast("말 '\(w)' → \(Dog.trickTitle(k)) 자세 · 배우는 중 \(Int(v2 * 100))%") }
         }
-        if ws.isEmpty && !first { s.toast("'\(Dog.trickTitle(k))' 잘했어요 \(Int(v * 100))%") }
+        if ws.isEmpty { s.toast("\(Dog.trickTitle(k)) 자세 \(Int(v * 100))% · 말은 못 들었어요") }
         // 너무 많아지면 약한 짝부터 버림
         if p.words.count > 80 {
             let keep = p.words.sorted { ($0.value.values.max() ?? 0) > ($1.value.values.max() ?? 0) }.prefix(60)
@@ -1787,6 +1787,9 @@ final class Dog {
         }
         heardWords.removeAll()
     }
+
+    /// 인식기에 미리 알려 줄 흔한 재주 말 (어떤 말로 가르칠지는 사람 마음 — 이것은 알아듣기 쉽게 돕는 것일 뿐)
+    nonisolated static let cueWords = ["앉아", "엎드려", "손", "굴러", "일어서", "서", "빵", "기다려", "이리와", "앉자", "옳지", "잘했어"]
 
     nonisolated static func trickTitle(_ k: String) -> String {
         switch k {
