@@ -402,7 +402,7 @@ struct SettingsTab: View {
         .padding(24)
     }
 
-    /// 숫자판 한 칸 (소수 한 자리까지, 최대 182.5일)
+    /// 숫자판 한 칸 (소수 한 자리까지, 최대 365일)
     private func key(_ k: String) {
         switch k {
         case "⌫": if !entry.isEmpty { entry.removeLast() }

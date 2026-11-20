@@ -384,33 +384,29 @@ final class Dog {
         }
         let pl = simd_length(push)
         if pl > 1e-4 {
-            let m = min(pl, 0.25)                          // 한 번에 너무 튀지 않게
+            let m = min(pl, 0.35 * lastDt)                 // 조금씩만 (0.10.7 까지 한 화면에 25cm 까지 밀려 미끄러지듯 보였음)
             pos.x += push.x / pl * m
             pos.z += push.y / pl * m
         }
-        // 내 몸: 강아지 몸이 내 몸(서 있으면 발 둘레, 앉아 있으면 무릎·발까지) 안에 들어와 있으면 비켜 섬 (0.10.7).
-        // 길찾기는 내 몸을 피하지만, 내가 강아지 쪽으로 움직이거나 먹기·당기기·내려놓기처럼 길찾기 밖의 움직임으로
-        // 강아지가 내 몸 안에 들어가 있어 만질 수 없었음. 순간이동 없이 초당 0.6m 로 슬며시 비킴
-        if let fy = s.room.floorY {
-            let u = SIMD2<Float>(s.userPos.x, s.userPos.z), uf = SIMD2<Float>(s.userFwd.x, s.userFwd.z)
-            var spots: [(SIMD2<Float>, Float)] = [(u - uf * 0.04, 0.2)]
-            if s.userPos.y - fy < 1.25 { spots += [(u + uf * 0.22, 0.15), (u + uf * 0.42, 0.13)] }
-            var out = SIMD2<Float>(0, 0)
-            let ab = b - a
-            for (c, rr) in spots {
-                let t = max(0, min(1, simd_dot(c - a, ab) / max(1e-6, simd_dot(ab, ab))))
-                let q = a + ab * t
-                let d = q - c, dl = simd_length(d), need = rr + wid
-                if dl < need { out += (dl > 1e-4 ? d / dl : SIMD2<Float>(-f2.y, f2.x)) * (need - dl) }
-            }
-            let ol = simd_length(out)
-            if ol > 1e-4 {
-                let m = min(ol, 0.6 * lastDt)
-                pos.x += out.x / ol * m
-                pos.z += out.y / ol * m
-            }
-        }
     }
+
+    /// 내가 선 채로 팸이 있는 자리에 1초 넘게 머물면 팸이 '걸어서' 비켜남 (0.10.8).
+    /// 0.10.7 은 내 몸 둘레에 들어온 팸을 걸음 없이 밀어내서, 다가가거나 손을 뻗기만 해도(머리가 앞으로 나가면)
+    /// 발도 안 움직이고 스케이트 타듯 미끄러져 멀어졌음 → 밀어내기를 없애고, 손을 뻗는 중·앉아 있을 때·만지는 중엔 그대로 둠
+    private func yieldToUser() {
+        guard act == .idle || act == .watch || act == .wander, !touching, !baby, onPerch == nil, let fy = s.room.floorY else { return }
+        let u = SIMD2<Float>(s.userPos.x, s.userPos.z)
+        guard s.userPos.y - fy > 1.3, simd_distance(u, userRef) < 0.1 else { userRef = u; userStillAt = s.now; return }
+        guard s.now - userStillAt > 1.0 else { return }
+        if s.room.hands.contains(where: { $0.seen && simd_distance($0.palm, bodyWorld) < 0.5 }) { return }
+        let d = xz - u, dl = simd_length(d)
+        guard dl < 0.2 + 0.1 * g else { return }
+        let n = dl > 1e-3 ? d / dl : SIMD2<Float>(-sin(yaw), -cos(yaw))
+        spot = u + n * (0.5 + 0.15 * g)
+        userStillAt = s.now
+        begin(.wander)
+    }
+    private var userRef = SIMD2<Float>(0, 0), userStillAt: Double = 0
 
     /// 같은 되풀이 동작이 비현실적으로 길게 이어지지 않게 (0.10.4):
     /// ① 걸음 없이 제자리에서 몸만 도는 걸음(turnGait)이 3초 넘으면 멈춤
@@ -682,6 +678,7 @@ final class Dog {
             }
         }
         clearBody()
+        yieldToUser()
         watchLoops()
         var tilt: Float = 0
         if act != .held && act != .fall && act != .perch {

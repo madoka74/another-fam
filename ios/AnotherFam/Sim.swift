@@ -2,9 +2,11 @@ import Foundation
 
 /// 시간·나이·욕구·포인트 (화면·공간과 상관없는 계산만)
 /// - 하루는 현실과 같은 24시간 (밥·물·잠·배변·놀이는 현실 시간으로 흐름)
-/// - 나이는 현실 하루에 26일씩 먹음: 13년(4,745일) ÷ 26 = 182.5일 ≈ 6달. 13살이 되면 그 모습 그대로 머묾
+/// - 나이는 현실 하루에 13일씩 먹음: 13년(4,745일) ÷ 13 = 365일 = 현실 1년 (현실 한 달 ≈ 강아지 1년).
+///   0.10.7 까지 26배(6달)였음 — 초반에 너무 빨리 자라 1년으로 늘림 (PetState.rate 로 이미 키우던 팸의 나이는 그대로 이어 감)
+///   13살이 되면 그 모습 그대로 머묾
 enum Sim {
-    static let ageRate: Double = 26
+    static let ageRate: Double = 13
     static let maxAge: Double = 4745
     static let startPoints = 1500
     /// 포인트: 쓴 시간 6초에 1 (1분 10P, 15분 150P = 성견 이틀치 밥)
@@ -114,6 +116,7 @@ struct PetState: Codable, Equatable {
     var meals = 0
     var bottle: Float = 0                                            // 젖병에 타 둔 분유 (1회분 = 1)
     var together = false                                             // 비전에서 함께하는 중 (아이폰은 이 동안 알림을 멈춤)
+    var rate: Double = Sim.ageRate                                   // born 을 셈한 나이 빠르기 (바뀌면 지금 나이를 그대로 두고 born 을 다시 셈)
 
     init() {}
 
@@ -132,6 +135,15 @@ struct PetState: Codable, Equatable {
         checkupAge = g(.checkupAge, z.checkupAge); jointUntil = g(.jointUntil, z.jointUntil); asleep = g(.asleep, z.asleep)
         walkM = g(.walkM, z.walkM); walkDay = g(.walkDay, z.walkDay); meals = g(.meals, z.meals)
         bottle = g(.bottle, z.bottle); together = g(.together, z.together)
+        // 나이 빠르기가 바뀜(0.10.8: 26배 → 13배): 지금 나이는 그대로 두고 그 나이가 되는 born 으로 옮김
+        // (그대로 두면 이미 키우던 팸의 나이가 절반으로 줄어 다시 젖병을 먹는 아기가 됨)
+        let r = g(.rate, 26.0)
+        if r != Sim.ageRate {
+            let now = Date().timeIntervalSince1970
+            let a = min(Sim.maxAge, max(0, (now - born) / 86400 * r))
+            born = now - a / Sim.ageRate * 86400
+        }
+        rate = Sim.ageRate
     }
 
     // MARK: 나이

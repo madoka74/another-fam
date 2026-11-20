@@ -832,15 +832,6 @@ final class PlaySession {
             ex.append((u, 0.24))
             if sitting { ex.append((u + f2 * 0.22, 0.16)); ex.append((u + f2 * 0.42, 0.14)) }
             else { ex.append((u + f2 * 0.12, 0.2)) }
-            // 내 몸 안(발 둘레 22cm)에 멈춰 있는 장난감은 살며시 밖으로 굴려 냄 — 몸 안에 있으면 손이 닿지 않음 (0.10.7)
-            // 단, 몸을 숙였거나(눈높이 1.3m 아래) 손이 가까이 있으면(집으려는 중) 그대로 둠 — 0.10.1 처럼 집으려는 것을 밀어내지 않게
-            let reaching = userPos.y - fy < 1.3 || room.hands.contains { $0.seen && $0.palm.y - fy < 0.6 }
-            for p in props where !reaching && p.kind == .toy && p.heldBy == nil && !p.inMouth {
-                let d = SIMD2<Float>(p.pos.x, p.pos.z) - u, r = simd_length(d)
-                guard r > 1e-3, r < 0.22, p.pos.y < userPos.y - 0.5, simd_length(p.velocity) < 0.15 else { continue }
-                let n = d / r
-                p.setVelocity(SIMD3<Float>(n.x * 0.35, 0.05, n.y * 0.35))
-            }
             // 굴러오는 장난감이 내 몸을 뚫지 않게: 몸통(눈 8cm 뒤, 반지름 20cm) 안으로 '들어오는 중'인 것만 튕겨 냄.
             // 0.10.1 은 몸·다리를 물리 상자로 둬서 ① 아래로 쏘는 면 찾기에 상자가 잡혀 내려놓은 팸·물건이 그 위(10~20cm)에 떴고
             // ② 몸을 숙이면 상자가 머리를 따라 앞으로 와 바닥 장난감을 밀어냈음 → 상자 없이 속도만 바꿈, 서 있을 때만
