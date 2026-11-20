@@ -51,7 +51,11 @@ final class DogAnimator {
     var moving: Bool { gait != nil }
     /// 자세가 자리 잡았는지 (이음 동작·한 번 하는 동작이 끝남)
     var settled: Bool { queue.isEmpty && !oneShot && gait == nil && cur.name == posture && fade >= 1 }
-    var busy: Bool { oneShot || !queue.isEmpty }
+    var busy: Bool { oneShot || inTransition }
+    /// 자세를 바꾸는 이음 동작(앉았다 일어서기 등)이 아직 끝나지 않음.
+    /// 0.10.6 까지: 마지막 이음 동작은 대기열에서 빠진 채 재생돼 '바쁘지 않음'으로 보였음 → 다리가 굽은 채 걸음·제자리 돌기·다른 동작이
+    /// 그 위에 끼어들어, 다리를 구부린 채 빙글빙글 돌거나 누운 자세에서 걸음으로 몸이 휙 뒤집혔음
+    var inTransition: Bool { !queue.isEmpty || (cur.tag == "trans" && curT < cur.dur) }
     var current: String { cur.name }
     /// 지금 걸음의 빠르기 (m/s, 실제 크기)
     var speed: Float { gait != nil ? cur.speed * rate * growth.g * fade : 0 }
@@ -68,7 +72,7 @@ final class DogAnimator {
     func setPosture(_ p: String) {
         guard D.clips[p] != nil else { return }
         if gait != nil { gait = nil }
-        if p == posture && (cur.name == p || !queue.isEmpty) && !oneShot { return }
+        if p == posture && (cur.name == p || inTransition) && !oneShot { return }
         let src = oneShot ? (after ?? posture) : posture
         oneShot = false
         queue = path(src, p)
@@ -220,6 +224,7 @@ final class DogAnimator {
         }
         extras(&p, dt)
         guardHead(&p, base: base, dt)
+        guardBody(&p, dt)
         pose = p
         // 땅에 맞춤 (뛰는 동작은 그대로)
         let (R, T, S) = D.fk(p, growth)
@@ -259,6 +264,26 @@ final class DogAnimator {
             }
         }
         prevNeck = p.q[J.neck]; prevHead = p.q[J.head]; prevOK = true
+    }
+
+    /// 몸통 안전장치 (0.10.7): 몸·허리·가슴이 초당 6 라디안보다 빠르게 돌지 않게.
+    /// 동작 156개 가운데 이보다 빠른 것은 구르기·제자리 돌기·덮치기·뒤돌기·털기뿐(그대로 둠) —
+    /// 그 밖에 이보다 빠르면 서로 다른 자세 사이를 갑자기 섞은 것(누운 자세 → 걸음 등)이라 천천히 이어 줌
+    private var prevBody = [simd_quatf](repeating: Q.id, count: 3), prevBodyOK = false
+    private func guardBody(_ p: inout Pose, _ dt: Float) {
+        let n = cur.name
+        let fast = n == "roll_over" || n.hasPrefix("spin") || n == "pounce" || n.hasPrefix("turn_") || n.hasPrefix("shake") || n == "tumble" || n == "startle" || cur.tag == "jump" || n.hasPrefix("held")
+        let js = [J.root, J.spine, J.chest]
+        if prevBodyOK && !fast && dt > 0 {
+            let lim: Float = 6 * dt
+            for (k, j) in js.enumerated() {
+                let q = prevBody[k].inverse * p.q[j]
+                let d = 2 * acos(min(1, abs(q.real)))
+                if d > lim { p.q[j] = Q.nlerp(prevBody[k], p.q[j], lim / d) }
+            }
+        }
+        for (k, j) in js.enumerated() { prevBody[k] = p.q[j] }
+        prevBodyOK = true
     }
 
     private func extras(_ p: inout Pose, _ dt: Float) {

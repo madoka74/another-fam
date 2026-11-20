@@ -333,40 +333,60 @@ enum Catalog {
         Item(id: "food_adult", name: "어덜트 사료", cat: .food, price: 150, qty: 4, unit: "끼", icon: "takeoutbag.and.cup.and.straw.fill", note: "1~7살 · 이틀치", ageMin: 300, ageMax: 2700),
         Item(id: "food_adult_l", name: "어덜트 사료 대용량", cat: .food, price: 700, qty: 20, unit: "끼", icon: "shippingbox.fill", note: "1~7살 · 열흘치", ageMin: 300, ageMax: 2700),
         Item(id: "food_senior", name: "시니어 사료", cat: .food, price: 160, qty: 4, unit: "끼", icon: "takeoutbag.and.cup.and.straw.fill", note: "7살부터 · 이틀치", ageMin: 2400),
+        Item(id: "food_salmon", name: "연어 어덜트 사료", cat: .food, price: 170, qty: 4, unit: "끼", icon: "fish.fill", note: "1~7살 · 이틀치 · 털 윤기", ageMin: 300, ageMax: 2700),
         Item(id: "treat", name: "간식", cat: .food, price: 120, qty: 10, unit: "개", icon: "star.fill", note: "손으로 주기 · 훈련", ageMin: 42),
+        Item(id: "jerky", name: "닭가슴살 육포", cat: .food, price: 140, qty: 8, unit: "개", icon: "flame.fill", note: "손으로 주기 · 좋아하는 간식", ageMin: 70),
+        Item(id: "cheese", name: "치즈 큐브", cat: .food, price: 100, qty: 12, unit: "개", icon: "square.grid.2x2.fill", note: "작은 한입 간식 · 훈련", ageMin: 56),
         Item(id: "dental", name: "덴탈 껌", cat: .food, price: 150, qty: 5, unit: "개", icon: "mouth.fill", note: "이갈이 · 치아 관리", ageMin: 90),
         Item(id: "pad", name: "배변 패드", cat: .care, price: 100, qty: 10, unit: "장", icon: "square.fill", note: "한 장에 세 번"),
         Item(id: "bag", name: "배변 봉투", cat: .care, price: 60, qty: 20, unit: "장", icon: "bag.fill", note: "치울 때 한 장"),
         Item(id: "shampoo", name: "거품 샴푸", cat: .care, price: 200, qty: 5, unit: "회", icon: "bubbles.and.sparkles.fill", note: "물 없이 씻기기", ageMin: 56),
         Item(id: "brush", name: "빗", cat: .care, price: 150, qty: 0, unit: "", icon: "comb.fill", note: "손에 쥐고 빗겨 주기"),
+        Item(id: "wipes", name: "반려견 물티슈", cat: .care, price: 80, qty: 20, unit: "장", icon: "hand.raised.fill", note: "발·얼굴 닦기 · 청결 조금", ageMin: 21),
+        Item(id: "toothpaste", name: "강아지 치약", cat: .care, price: 120, qty: 10, unit: "회", icon: "mouth", note: "양치 · 건강 조금", ageMin: 90),
         Item(id: "bottle", name: "젖병", cat: .living, price: 100, qty: 0, unit: "", icon: "waterbottle.fill", note: "분유 먹일 때", ageMax: 60),
         Item(id: "bowl_food", name: "밥그릇", cat: .living, price: 80, qty: 0, unit: "", icon: "circle.circle.fill", note: "사료를 담는 그릇"),
         Item(id: "bowl_water", name: "물그릇", cat: .living, price: 0, qty: 0, unit: "", icon: "drop.circle.fill", note: "입양 키트 · 물은 무료"),
         Item(id: "blanket", name: "담요", cat: .living, price: 0, qty: 0, unit: "", icon: "rectangle.fill", note: "입양 키트 · 첫 잠자리"),
         Item(id: "bed", name: "방석", cat: .living, price: 350, qty: 0, unit: "", icon: "bed.double.fill", note: "푹신한 잠자리"),
+        Item(id: "cushion", name: "쿠션 매트", cat: .living, price: 280, qty: 0, unit: "", icon: "square.fill.on.square.fill", note: "도톰한 누빔 매트 · 잠자리"),
         Item(id: "leash", name: "하네스와 줄", cat: .living, price: 400, qty: 0, unit: "", icon: "figure.walk", note: "산책", ageMin: 70),
         Item(id: "steps", name: "강아지 계단", cat: .living, price: 450, qty: 0, unit: "", icon: "stairs", note: "소파 오르내리기 · 관절 보호", ageMin: 300),
         Item(id: "ball", name: "공", cat: .toy, price: 120, qty: 0, unit: "", icon: "tennisball.fill", note: "던지면 물어 옴", ageMin: 28),
+        Item(id: "ball_mini", name: "작은 고무공", cat: .toy, price: 90, qty: 0, unit: "", icon: "circle.fill", note: "잘 튀는 빨간 공 · 굴리기", ageMin: 28),
+        Item(id: "frisbee", name: "말랑 원반", cat: .toy, price: 180, qty: 0, unit: "", icon: "circle.dashed", note: "던지면 날아감 · 물어 옴", ageMin: 120),
+        Item(id: "squeak_ball", name: "삑삑이 공", cat: .toy, price: 160, qty: 0, unit: "", icon: "speaker.wave.1.fill", note: "물면 삑 · 굴러감", ageMin: 28),
         Item(id: "rope", name: "터그 로프", cat: .toy, price: 150, qty: 0, unit: "", icon: "lasso", note: "당기기 놀이", ageMin: 42),
+        Item(id: "rope_ring", name: "링 터그", cat: .toy, price: 170, qty: 0, unit: "", icon: "circle.circle", note: "둥근 고리 · 당기기 놀이", ageMin: 60),
         Item(id: "squeak", name: "삑삑이 뼈다귀", cat: .toy, price: 180, qty: 0, unit: "", icon: "speaker.wave.2.fill", note: "물면 소리가 남", ageMin: 28),
         Item(id: "chewbone", name: "씹는 뼈", cat: .toy, price: 200, qty: 0, unit: "", icon: "capsule.fill", note: "오래 씹기", ageMin: 60),
+        Item(id: "antler", name: "사슴뿔 개껌", cat: .toy, price: 260, qty: 0, unit: "", icon: "leaf.fill", note: "단단해 오래 씹음", ageMin: 180),
         Item(id: "blanky", name: "블랭키씨 인형", cat: .toy, price: 300, qty: 0, unit: "", icon: "figure.stand", note: "물고 다니는 애착 인형", ageMin: 21),
         Item(id: "vaccine", name: "예방 접종", cat: .health, price: 250, qty: 1, unit: "회", icon: "syringe.fill", note: "6·9·12주, 그 뒤 해마다", ageMin: 42),
         Item(id: "checkup", name: "건강 검진", cat: .health, price: 200, qty: 1, unit: "회", icon: "stethoscope", note: "해마다 한 번", ageMin: 180),
         Item(id: "joint", name: "관절 영양제", cat: .health, price: 300, qty: 1, unit: "달", icon: "pills.fill", note: "7살부터 · 한 달", ageMin: 2400),
+        Item(id: "heartworm", name: "심장사상충 예방약", cat: .health, price: 220, qty: 1, unit: "달", icon: "heart.text.square.fill", note: "한 달에 한 번", ageMin: 56),
+        Item(id: "probiotic", name: "유산균", cat: .health, price: 180, qty: 10, unit: "회", icon: "leaf.circle.fill", note: "장 건강 · 건강 조금", ageMin: 42),
     ]
     static func item(_ id: String) -> Item? { items.first { $0.id == id } }
     /// 젖떼기: 이 나이(생후 5주)부터는 젖병을 먹지 않음 (분유는 4주까지, 3~5주는 젖병과 사료를 함께)
     static let weanAge: Double = 35
     /// 공간에 꺼내 놓는 것
-    static let placeable: Set<String> = ["bowl_food", "bowl_water", "blanket", "bed", "pad", "ball", "rope", "squeak", "chewbone", "blanky", "steps"]
-    static let toys: [String] = ["ball", "rope", "squeak", "chewbone", "blanky"]
+    static let placeable: Set<String> = ["bowl_food", "bowl_water", "blanket", "bed", "pad", "ball", "rope", "squeak", "chewbone", "blanky", "steps",
+                                         "cushion", "ball_mini", "frisbee", "squeak_ball", "rope_ring", "antler"]
+    static let toys: [String] = ["ball", "rope", "squeak", "chewbone", "blanky", "ball_mini", "frisbee", "squeak_ball", "rope_ring", "antler"]
+    /// 같은 방식으로 쓰는 물건의 바탕 종류 (0.10.7 새 물건): 생김새는 저마다, 강아지와 노는 방식은 바탕 물건과 같음
+    static let baseOf: [String: String] = ["jerky": "treat", "cheese": "treat", "ball_mini": "ball", "frisbee": "ball", "squeak_ball": "squeak",
+                                           "rope_ring": "rope", "antler": "chewbone", "cushion": "blanket"]
+    static func base(_ id: String) -> String { baseOf[id] ?? id }
+    /// 손으로 주는 간식 (사료 봉지로 붓는 것이 아님)
+    static func isTreat(_ id: String) -> Bool { let b = base(id); return b == "treat" || b == "dental" }
     static func foodFor(_ age: Double) -> [String] {
         if age < 21 { return ["formula"] }
         if age < 35 { return ["formula", "food_puppy"] }
         if age < 330 { return ["food_puppy"] }
-        if age < 2555 { return ["food_adult", "food_adult_l", "food_puppy"] }
-        return ["food_senior", "food_adult", "food_adult_l"]
+        if age < 2555 { return ["food_adult", "food_salmon", "food_adult_l", "food_puppy"] }
+        return ["food_senior", "food_adult", "food_salmon", "food_adult_l"]
     }
 }
 

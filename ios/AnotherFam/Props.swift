@@ -30,6 +30,9 @@ struct ToolWork {
 @MainActor
 final class Prop {
     let id: String              // 물건 종류 (Catalog id) — 치울 것은 "poop"/"pee", 손 도구는 "foodbag"(사료 봉지)·"jug"(물병)·"padsheet"(새 패드 한 장)·"bag"(배변 봉투)
+    /// 쓰는 방식이 같은 바탕 종류 (새 물건 0.10.7: 작은 고무공·원반 → "ball", 삑삑이 공 → "squeak", 링 터그 → "rope",
+    /// 사슴뿔 → "chewbone", 육포·치즈 → "treat", 쿠션 매트 → "blanket"). 강아지 행동은 이것으로, 생김새·보관함 수는 id 로
+    let base: String
     let uid = UUID().uuidString
     let kind: PropKind
     let entity = Entity()
@@ -78,7 +81,8 @@ final class Prop {
 
     init(_ id: String) {
         self.id = id
-        switch id {
+        self.base = Catalog.base(id)
+        switch base {
         case "ball", "rope", "squeak", "chewbone", "blanky": kind = .toy
         case "bottle", "brush", "treat", "shampoo", "dental", "foodbag", "jug", "padsheet", "bag": kind = .tool
         case "poop", "pee": kind = .mess
@@ -90,6 +94,41 @@ final class Prop {
         var mass: Float = 0.05
         var bounce: Float = 0.3
         switch id {
+        // ---- 0.10.7 새 물건 (생김새) ----
+        case "cushion":
+            // 도톰한 누빔 쿠션 매트 (담요와 같은 크기, 3cm 두께)
+            add(.generateBox(width: 0.54, height: 0.03, depth: 0.44, cornerRadius: 0.012), Geo.fabric("quilt", SIMD3<Float>(0.60, 0.68, 0.58)), at: SIMD3<Float>(0, 0.015, 0))
+            add(.generateBox(width: 0.545, height: 0.008, depth: 0.445, cornerRadius: 0.004), Geo.fabric("weave", SIMD3<Float>(0.45, 0.52, 0.44)), at: SIMD3<Float>(0, 0.004, 0))
+            r = 0.27
+            shape = ShapeResource.generateBox(size: SIMD3<Float>(0.54, 0.03, 0.44)).offsetBy(translation: SIMD3<Float>(0, 0.015, 0))
+        case "ball_mini":
+            add(.generateSphere(radius: 0.02), Geo.mat(SIMD3<Float>(0.86, 0.17, 0.14), rough: 0.35))
+            r = 0.02; shape = .generateSphere(radius: 0.02); mass = 0.02; bounce = 0.78
+        case "frisbee":
+            // 말랑한 천 원반: 가장자리가 도톰하고 가운데가 얇음
+            add(Geo.lathe([(0, 0.004), (0.07, 0.003), (0.085, 0.0), (0.092, 0.006), (0.088, 0.013), (0.075, 0.011), (0, 0.009)], seg: 36), Geo.fabric("weave", SIMD3<Float>(0.24, 0.50, 0.86)))
+            r = 0.09; shape = .generateBox(size: SIMD3<Float>(0.184, 0.014, 0.184)); mass = 0.035; bounce = 0.12
+        case "squeak_ball":
+            add(.generateSphere(radius: 0.03), Geo.mat(SIMD3<Float>(0.96, 0.56, 0.16), rough: 0.45))
+            for k in 0..<6 {
+                let a = Float(k) / 6 * 2 * .pi
+                add(.generateSphere(radius: 0.006), Geo.mat(SIMD3<Float>(0.98, 0.80, 0.30), rough: 0.5), at: SIMD3<Float>(cos(a) * 0.028, sin(a * 2) * 0.008, sin(a) * 0.028))
+            }
+            r = 0.032; shape = .generateSphere(radius: 0.031); mass = 0.035; bounce = 0.55
+        case "rope_ring":
+            // 두 가지 색 줄을 꼬아 만든 고리
+            let a1 = Geo.fabric("rope", SIMD3<Float>(0.30, 0.55, 0.80)), a2 = Geo.fabric("rope", SIMD3<Float>(0.92, 0.90, 0.86))
+            for k in 0..<16 {
+                let a = Float(k) / 16 * 2 * .pi
+                add(.generateSphere(radius: 0.0125), k % 2 == 0 ? a1 : a2, at: SIMD3<Float>(cos(a) * 0.055, 0, sin(a) * 0.055))
+            }
+            r = 0.07; shape = .generateBox(size: SIMD3<Float>(0.136, 0.025, 0.136)); mass = 0.05; bounce = 0.15
+        case "jerky":
+            add(.generateBox(width: 0.046, height: 0.005, depth: 0.014, cornerRadius: 0.002), Geo.mat(SIMD3<Float>(0.56, 0.30, 0.18), rough: 0.8))
+            r = 0.04; mass = 0.01; bounce = 0.1
+        case "cheese":
+            add(.generateBox(width: 0.014, height: 0.014, depth: 0.014, cornerRadius: 0.002), Geo.mat(SIMD3<Float>(0.98, 0.82, 0.36), rough: 0.6))
+            r = 0.04; mass = 0.006; bounce = 0.1
         case "bowl_food", "bowl_water":
             let water = id == "bowl_water"
             // 밥그릇 = 스테인리스(금속 광택), 물그릇 = 유약 바른 도자기. 둘 다 말린 입구 테두리 + 고무 받침
@@ -200,8 +239,8 @@ final class Prop {
             add(.generateSphere(radius: 0.02), k, at: SIMD3<Float>(0.085, 0, 0))
             add(.generateSphere(radius: 0.02), k, at: SIMD3<Float>(-0.085, 0, 0))
             r = 0.1; shape = .generateBox(size: SIMD3<Float>(0.21, 0.036, 0.036)); mass = 0.06; bounce = 0.15
-        case "squeak", "chewbone":
-            let col = id == "squeak" ? SIMD3<Float>(0.35, 0.70, 0.86) : SIMD3<Float>(0.90, 0.84, 0.70)
+        case "squeak", "chewbone", "antler":
+            let col = id == "squeak" ? SIMD3<Float>(0.35, 0.70, 0.86) : (id == "antler" ? SIMD3<Float>(0.56, 0.44, 0.32) : SIMD3<Float>(0.90, 0.84, 0.70))
             let m = Geo.mat(col, rough: id == "squeak" ? 0.45 : 0.8)
             add(Geo.lathe([(0, -0.045), (0.009, -0.044), (0.009, 0.044), (0, 0.045)], seg: 12), m, rot: simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(0, 0, 1)))
             for sx: Float in [-1, 1] {
@@ -295,7 +334,7 @@ final class Prop {
             let vb = entity.visualBounds(relativeTo: entity)
             let e = vb.extents
             if e.x > 0.003 && e.y > 0.003 && e.z > 0.003 && e.x < 1 && e.y < 1 && e.z < 1 {
-                if id == "ball" {
+                if id == "ball" || id == "ball_mini" || id == "squeak_ball" {
                     shape = ShapeResource.generateSphere(radius: max(e.x, e.y, e.z) / 2).offsetBy(translation: vb.center)
                 } else {
                     shape = ShapeResource.generateBox(size: e).offsetBy(translation: vb.center)
@@ -314,7 +353,7 @@ final class Prop {
                                          material: PhysicsMaterialResource.generate(friction: id == "blanky" || id == "padsheet" || id == "bag" ? 0.95 : 0.7, restitution: bounce), mode: .dynamic)
             b.linearDamping = id == "padsheet" ? 0.9 : 0.05             // 패드는 종이처럼 천천히 내려앉음
             b.isContinuousCollisionDetectionEnabled = true        // 빨리 던져도 소파·벽(얇은 스캔 면)을 뚫고 지나가지 않게
-            b.angularDamping = id == "ball" ? 0.15 : 0.6
+            b.angularDamping = id == "ball" || id == "ball_mini" || id == "squeak_ball" ? 0.15 : 0.6
             entity.components.set(b)
             entity.components.set(PhysicsMotionComponent())
         } else if kind == .fixed {
@@ -330,7 +369,7 @@ final class Prop {
     private var halfV: SIMD3<Float>?
     private var centerV = SIMD3<Float>(0, 0, 0)
     /// 작아서 손이 조금 빗나가도 잡혀야 하는 것
-    var small: Bool { ["treat", "dental", "ball", "bag"].contains(id) }
+    var small: Bool { ["treat", "dental", "ball", "bag"].contains(base) }
 
     private func add(_ mesh: MeshResource?, _ m: RealityKit.Material, at p: SIMD3<Float> = .zero, rot: simd_quatf? = nil) {
         guard let mesh else { return }
@@ -556,6 +595,7 @@ final class Prop {
         switch id {
         case "bowl_food", "bowl_water": return SIMD3<Float>(0.078, 0.022, 0.078)
         case "blanket": return SIMD3<Float>(0.27, 0.008, 0.22)
+        case "cushion": return SIMD3<Float>(0.27, 0.015, 0.22)
         case "bed": return SIMD3<Float>(0.275, 0.05, 0.275)
         case "pad", "padsheet": return SIMD3<Float>(0.23, 0.003, 0.17)
         case "steps": return SIMD3<Float>(0.18, 0.14, 0.25)
@@ -587,6 +627,7 @@ final class Prop {
         let l = entity.convert(position: w, from: nil)
         switch id {
         case "blanket": return abs(l.x) < 0.27 && abs(l.z) < 0.22 ? 0.012 : nil       // 살짝 눌림
+        case "cushion": return abs(l.x) < 0.27 && abs(l.z) < 0.22 ? 0.024 : nil       // 3cm 매트가 살짝 눌림
         case "pad": return abs(l.x) < 0.23 && abs(l.z) < 0.17 ? 0.005 : nil
         case "bed":
             // 실제 모양대로: 가운데 방석 5.4cm, 둘레 도넛 쿠션은 가장 높은 곳 10cm (0.9 는 둘레를 7.5cm 로 봐 강아지 몸이 쿠션에 반쯤 묻혀 지나갔음)

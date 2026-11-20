@@ -185,6 +185,8 @@ final class PlaySession {
     }
 
     func prop(_ id: String) -> Prop? { props.first { $0.id == id } }
+    /// 바탕 종류로 찾기 (담요 자리에 쿠션 매트를 깔았어도 잠자리로 — 0.10.7)
+    func propBase(_ b: String) -> Prop? { props.first { $0.id == b } ?? props.first { $0.base == b } }
 
     // MARK: 집 자리 (방에 고정한 기준점 — 물건 자리를 다음에도 그대로)
     // 0.10.0 진짜 원인: 비전프로는 다시 켠 직후 고정점을 '아직 방을 다 알아보기 전의 어림 자리'로 먼저 알려 주고,
@@ -320,7 +322,7 @@ final class PlaySession {
             p.entity.setOrientation(Q.ry(w.1), relativeTo: nil)
         }
         settleFixed()
-        if let d = dog, d.entity.isEnabled, !d.holding, let b = prop("bed") ?? prop("blanket") {
+        if let d = dog, d.entity.isEnabled, !d.holding, let b = propBase("bed") ?? propBase("blanket") {
             d.place(at: SIMD3<Float>(b.pos.x, fy, b.pos.z), yaw: d.yaw)
         }
     }
@@ -515,7 +517,7 @@ final class PlaySession {
         // (0.7.0 까지: 켤 때마다 '내 앞 1.4m' 둘레 아무 곳에 새로 놓아 매번 자리가 바뀌고 가구 밑에도 생겼음)
         for i in 0..<min(6, pet.poops) {
             if let l = pet.layout["_poop\(i)"], let w = toWorld(l) { addMessProp("poop", at: SIMD3<Float>(w.0.x, fy, w.0.z)); continue }
-            let c = prop("bed")?.pos ?? prop("blanket")?.pos ?? base
+            let c = propBase("bed")?.pos ?? propBase("blanket")?.pos ?? base
             let a = Float(i) * 2.1 + 0.7
             let want = SIMD2<Float>(c.x + cos(a) * 0.55, c.z + sin(a) * 0.55)
             let q = clearSpot(near: want, half: 0.06, within: 0.8) ?? want
@@ -524,7 +526,7 @@ final class PlaySession {
         if let d = dog {
             var at = base
             var yaw = atan2(-f.x, -f.z)
-            if let b = prop("bed") ?? prop("blanket") { at = b.pos }
+            if let b = propBase("bed") ?? propBase("blanket") { at = b.pos }
             else if let l = pet.layout["_dog"], let w = toWorld(l) { at = w.0; yaw = w.1 }
             at.y = fy
             d.place(at: at, yaw: yaw)
@@ -553,9 +555,9 @@ final class PlaySession {
     private func settleFixed() {
         let flat: Set<String> = ["blanket", "pad", "bed"]
         let list = props.filter { ($0.kind == .fixed || $0.kind == .mess) && $0.heldBy == nil }
-        for p in list.filter({ flat.contains($0.id) }) + list.filter({ !flat.contains($0.id) }) {
+        for p in list.filter({ flat.contains($0.base) }) + list.filter({ !flat.contains($0.base) }) {
             let q = p.pos
-            let y = flat.contains(p.id) ? (room.floorY ?? q.y) : restY(p, q.x, q.z)
+            let y = flat.contains(p.base) ? (room.floorY ?? q.y) : restY(p, q.x, q.z)
             if abs(q.y - y) > 0.0005 { p.entity.setPosition(SIMD3<Float>(q.x, y, q.z), relativeTo: nil) }
         }
     }
@@ -586,7 +588,7 @@ final class PlaySession {
         var key = id
         var foodId = ""
         // 보관함의 사료 = 사료 봉지, 패드 = 손에 든 새 패드 한 장, 배변 봉투 = 손에 든 봉투 한 장
-        if Catalog.item(id)?.cat == .food && id != "treat" && id != "dental" && id != "formula" { foodId = id; key = "foodbag" }
+        if Catalog.item(id)?.cat == .food && !Catalog.isTreat(id) && id != "formula" { foodId = id; key = "foodbag" }
         if id == "pad" { key = "padsheet" }
         let kindProbe = Prop(key)
         if key == "foodbag" {
@@ -599,7 +601,7 @@ final class PlaySession {
         } else if kindProbe.kind == .fixed || kindProbe.kind == .toy {
             if pet.placed.contains(id) { return "이미 꺼내 두었어요" }
             pet.placed.append(id)
-        } else if id == "treat" || id == "dental" {
+        } else if Catalog.isTreat(id) {
             guard pet.use(id) else { return "남은 것이 없어요" }
         } else if props.contains(where: { $0.id == key }) { return "이미 꺼내 두었어요" }
         // 손에 쥘 것은 오른손 앞 아래에 (0.5.0: 바로 앞 가슴 높이라 강아지 위 카드와 겹쳐 보였음)
@@ -628,11 +630,11 @@ final class PlaySession {
     func putBack(_ id: String) {
         commitHome()
         var keys = [id]
-        if Catalog.item(id)?.cat == .food && id != "treat" && id != "dental" { keys = ["foodbag"] }
+        if Catalog.item(id)?.cat == .food && !Catalog.isTreat(id) { keys = ["foodbag"] }
         if id == "pad" { keys = ["pad", "padsheet"] }
         if id == "bag" { keys = ["bag"] }
         for p in props.filter({ keys.contains($0.id) }) {
-            if ["treat", "dental"].contains(p.id) || (p.id == "padsheet" && !p.used) || (p.id == "bag" && !p.used) {
+            if Catalog.isTreat(p.id) || (p.id == "padsheet" && !p.used) || (p.id == "bag" && !p.used) {
                 let inv = p.id == "padsheet" ? "pad" : p.id
                 pet.inv[inv] = pet.count(inv) + 1
             }
@@ -680,7 +682,14 @@ final class PlaySession {
         if d.holding { return }
         // 손가락이 실제로 닿은 자리에서 온 탭(쓰다듬기)만 거름. 바라보고 집은 탭은 손이 강아지 곁에 있어도 받음
         // (0.9 까지: 손이 강아지 몸 30cm 안에만 있어도 탭을 버려서, 가까이 있으면 카드가 절대 안 떴음)
-        if let w { if touchedDirectly(w) { return } }
+        // 탭이 '바라보고 엄지·검지를 모아 집은 것'인지 '손가락으로 직접 닿은 것(쓰다듬기)'인지 손 모양으로 가림 (0.10.7):
+        // 시스템은 손가락이 강아지 몸에 닿았다 떨어지는 것도 탭으로 보내서, 쓰다듬는 동안 카드가 자꾸 떴음.
+        // 집기 탭은 탭 직전 0.5초 안에 엄지·검지가 모여 있음 — 손 위치는 상관없어 가까이 있어도 카드가 뜸.
+        // 다만 강아지 털을 직접 집은 것(집은 자리가 탭 자리)은 쓰다듬기로 봄
+        if now - handSeenAt < 1.0 {
+            guard now - pinchAt < 0.5 else { return }
+            if let w, simd_distance(pinchGrip, w) < 0.05 { return }
+        } else if let w { if touchedDirectly(w) { return } }
         else if d.touching || now - d.lastTouchAt < 1.5 { return }
         if !cardOn && AppModel.shared.mainOpen { AppModel.shared.closeMain?() }     // 메뉴는 늘 하나만
         cardOn.toggle()
@@ -688,7 +697,11 @@ final class PlaySession {
         ringInfo = nil
     }
 
-    /// 탭 자리에 손가락·손바닥이 닿아 있음 = 직접 만진 것
+    @ObservationIgnored private var handSeenAt: Double = -9
+    @ObservationIgnored private var pinchAt: Double = -9
+    @ObservationIgnored private var pinchGrip = SIMD3<Float>(0, -9, 0)
+
+    /// 탭 자리에 손가락·손바닥이 닿아 있음 = 직접 만진 것 (손이 안 보일 때만 씀)
     private func touchedDirectly(_ w: SIMD3<Float>) -> Bool {
         for h in room.hands where h.seen {
             if simd_distance(h.index, w) < 0.04 || simd_distance(h.thumb, w) < 0.04 || simd_distance(h.middle, w) < 0.04 || simd_distance(h.palm, w) < 0.06 { return true }
@@ -815,9 +828,19 @@ final class PlaySession {
         if let fy = room.floorY {
             let u = SIMD2<Float>(userPos.x, userPos.z), f2 = SIMD2<Float>(userFwd.x, userFwd.z)
             let sitting = userPos.y - fy < 1.25
+            // 앉으면 무릎·발(앞 0.45m 까지)만 — 0.10.6 까지 앞 0.8m 까지 막아 불러도 손이 닿지 않는 곳에 멈췄음
             ex.append((u, 0.24))
-            if sitting { for k in 1...3 { ex.append((u + f2 * (0.2 * Float(k)), 0.2)) } }
+            if sitting { ex.append((u + f2 * 0.22, 0.16)); ex.append((u + f2 * 0.42, 0.14)) }
             else { ex.append((u + f2 * 0.12, 0.2)) }
+            // 내 몸 안(발 둘레 22cm)에 멈춰 있는 장난감은 살며시 밖으로 굴려 냄 — 몸 안에 있으면 손이 닿지 않음 (0.10.7)
+            // 단, 몸을 숙였거나(눈높이 1.3m 아래) 손이 가까이 있으면(집으려는 중) 그대로 둠 — 0.10.1 처럼 집으려는 것을 밀어내지 않게
+            let reaching = userPos.y - fy < 1.3 || room.hands.contains { $0.seen && $0.palm.y - fy < 0.6 }
+            for p in props where !reaching && p.kind == .toy && p.heldBy == nil && !p.inMouth {
+                let d = SIMD2<Float>(p.pos.x, p.pos.z) - u, r = simd_length(d)
+                guard r > 1e-3, r < 0.22, p.pos.y < userPos.y - 0.5, simd_length(p.velocity) < 0.15 else { continue }
+                let n = d / r
+                p.setVelocity(SIMD3<Float>(n.x * 0.35, 0.05, n.y * 0.35))
+            }
             // 굴러오는 장난감이 내 몸을 뚫지 않게: 몸통(눈 8cm 뒤, 반지름 20cm) 안으로 '들어오는 중'인 것만 튕겨 냄.
             // 0.10.1 은 몸·다리를 물리 상자로 둬서 ① 아래로 쏘는 면 찾기에 상자가 잡혀 내려놓은 팸·물건이 그 위(10~20cm)에 떴고
             // ② 몸을 숙이면 상자가 머리를 따라 앞으로 와 바닥 장난감을 밀어냈음 → 상자 없이 속도만 바꿈, 서 있을 때만
@@ -962,6 +985,10 @@ final class PlaySession {
 
     private func hands(_ dt: Float) {
         let hs = room.hands
+        for h in hs where h.seen {
+            handSeenAt = now
+            if h.pinch { pinchAt = now; pinchGrip = h.grip }
+        }
         for i in 0..<2 {
             let h = hs[i]
             let grab = h.seen && (h.pinch || h.fist)
@@ -1008,7 +1035,7 @@ final class PlaySession {
                     grabStart[i] = (now, p.pos)
                     lastGrabAt = now
                     // 삑삑이를 손으로 쥐면 삑 — 강아지가 듣고 돌아봄·달려옴 (0.10.3)
-                    if p.id == "squeak" { SoundBank.shared.play("squeak", on: p.entity, gain: -8); dog?.heardSqueak(p) }
+                    if p.base == "squeak" { SoundBank.shared.play("squeak", on: p.entity, gain: -8); dog?.heardSqueak(p) }
                 }
             }
             wasGrab[i] = grab

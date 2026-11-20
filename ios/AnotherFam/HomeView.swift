@@ -213,24 +213,38 @@ struct ShopTab: View {
 // MARK: - 보관함
 struct StorageTab: View {
     private var model: AppModel { AppModel.shared }
-    private static let instant: Set<String> = ["vaccine", "checkup", "joint"]
+    private static let instant: Set<String> = ["vaccine", "checkup", "joint", "wipes", "toothpaste", "heartworm", "probiotic"]
     private static let handy: Set<String> = ["bottle", "brush", "treat", "dental", "shampoo"]
+
+    // 상점과 같은 갈래로 나눠 보여 줌 (0.10.7: 한 줄로 이어져 사료는 위·물병은 맨 아래라 오가기 번거로웠음)
+    @State private var cat: ItemCat = .food
 
     var body: some View {
         if let p = model.pet {
-            let own = Catalog.items.filter { p.count($0.id) > 0 || model.session?.isOut($0.id) == true }
-            ScrollView {
-                VStack(spacing: 10) {
-                    ForEach(own) { it in
-                        let (a, b) = buttons(it, p)
-                        row(it.icon, it.name, it.permanent ? "" : "\(p.count(it.id))\(it.unit)", a, b)
+            let all = Catalog.items.filter { p.count($0.id) > 0 || model.session?.isOut($0.id) == true }
+            let own = all.filter { $0.cat == cat }
+            let jug = cat == .food && model.session != nil && p.age() >= 21
+            VStack(spacing: 16) {
+                Picker("", selection: $cat) {
+                    ForEach(ItemCat.allCases, id: \.self) { c in
+                        let n = all.filter { $0.cat == c }.count + (c == .food && model.session != nil && p.age() >= 21 ? 1 : 0)
+                        Text(n > 0 ? "\(c.rawValue) \(n)" : c.rawValue).tag(c)
                     }
-                    // 물병: 물은 공짜라 보관함 물건이 아니지만 꺼내고 넣을 수 있어야 함
-                    if model.session != nil && p.age() >= 21 {
-                        let out = model.session?.isOut("jug") == true
-                        row("waterbottle.fill", "물병", "", out ? nil : take("jug", true), out ? put("jug") : nil)
+                }
+                .pickerStyle(.segmented)
+                ScrollView {
+                    VStack(spacing: 10) {
+                        ForEach(own) { it in
+                            let (a, b) = buttons(it, p)
+                            row(it.icon, it.name, it.permanent ? "" : "\(p.count(it.id))\(it.unit)", a, b)
+                        }
+                        // 물병: 물은 공짜라 보관함 물건이 아니지만 꺼내고 넣을 수 있어야 함 — 사료 바로 아래
+                        if jug {
+                            let out = model.session?.isOut("jug") == true
+                            row("waterbottle.fill", "물병", "", out ? nil : take("jug", true), out ? put("jug") : nil)
+                        }
+                        if own.isEmpty && !jug { Text("이 갈래엔 아직 없어요").foregroundStyle(.secondary).padding(40) }
                     }
-                    if own.isEmpty { Text("비어 있어요").foregroundStyle(.secondary).padding(40) }
                 }
             }
             .padding(32)
@@ -246,7 +260,7 @@ extension StorageTab {
         let s = model.session
         if StorageTab.instant.contains(it.id) { return (Act(title: "쓰기", on: true, run: { model.useNow(it.id) }), nil) }
         if it.id == "leash" || it.id == "formula" { return (nil, nil) }
-        if it.cat == .food && it.id != "treat" && it.id != "dental" {
+        if it.cat == .food && !Catalog.isTreat(it.id) {
             // 사료: 사료 봉지를 손 앞에 꺼냄 / 꺼낸 봉지를 넣음
             let out = s?.isOut("foodbag") == true
             return (out ? nil : take(it.id, p.count(it.id) > 0), out ? put(it.id) : nil)
@@ -261,7 +275,7 @@ extension StorageTab {
             let out = s?.isOut("bag") == true
             return (out ? nil : take("bag", p.count("bag") > 0), out ? put("bag") : nil)
         }
-        if Catalog.placeable.contains(it.id) || StorageTab.handy.contains(it.id) {
+        if Catalog.placeable.contains(it.id) || StorageTab.handy.contains(Catalog.base(it.id)) {
             let out = s?.isOut(it.id) == true
             return (out ? nil : take(it.id, true), out ? put(it.id) : nil)
         }

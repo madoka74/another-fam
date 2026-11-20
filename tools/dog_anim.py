@@ -344,13 +344,15 @@ seq("look_back", [(0, STAND), (.4, S(sp=(0, .25, 0), ch=(0, .3, 0), nk=(0, .8, 0
 
 
 def spin(name, sgn):
-    T = .9
+    # 제자리에서 한 바퀴 (꼬리 쫓기·볼일 전 맴돌기): 0.10.6 까지 0.9초에 한 바퀴(초당 7 라디안)·발을 1.6cm 만 들어
+    # 다리를 구부린 채 미끄러지며 도는 것처럼 보였음 → 1.6초에 한 바퀴, 발을 또박또박 들며 (한 바퀴에 걸음 8번)
+    T = 1.6
     def m(s, t):
-        s["yaw"] = sgn * 2 * np.pi * (t / T); s["sp"] = (0, sgn * .45, 0); s["ch"] = (0, sgn * .3, 0); s["nk"] = (.1, sgn * .7, 0); s["hd"] = (.1, sgn * .4, 0)
+        s["yaw"] = sgn * 2 * np.pi * (t / T); s["sp"] = (0, sgn * .35, 0); s["ch"] = (0, sgn * .22, 0); s["nk"] = (.1, sgn * .5, 0); s["hd"] = (.1, sgn * .3, 0)
         for i, leg in enumerate(LEGS):
-            l = list(s[leg]); l[1] += .016 * abs(np.sin(np.pi * (t / T * 4 + i * .5))); s[leg] = tuple(l)
+            l = list(s[leg]); l[1] += .026 * max(0, np.sin(np.pi * (t / T * 4 + i * .5))); s[leg] = tuple(l)
         return s
-    clip(name, [(0, S(wag=.6)), (T, S(wag=.6))], loop=True, mod=m, events=[(i * .11, "step") for i in range(8)], tag="act", lin=True)
+    clip(name, [(0, S(wag=.6)), (T, S(wag=.6))], loop=True, mod=m, events=[(i * .2, "step") for i in range(8)], tag="act", lin=True)
 
 
 spin("spin_l", 1); spin("spin_r", -1)

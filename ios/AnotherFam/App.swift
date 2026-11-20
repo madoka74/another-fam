@@ -133,6 +133,10 @@ final class AppModel {
             case "vaccine": p.vaccines += 1; p.health = min(1, p.health + 0.1)
             case "checkup": p.checkupAge = p.age(); p.health = min(1, p.health + 0.15)
             case "joint": p.jointUntil = Date().timeIntervalSince1970 + 30 / Sim.ageRate * 86400; p.health = min(1, p.health + 0.05)
+            case "wipes": p.clean = min(1, p.clean + 0.2)
+            case "toothpaste": p.health = min(1, p.health + 0.02)
+            case "heartworm": p.health = min(1, p.health + 0.05)
+            case "probiotic": p.health = min(1, p.health + 0.03)
             default: break
             }
         }

@@ -25,9 +25,12 @@ final class Dog {
     private var pathGoal = SIMD2<Float>(9e9, 9e9)
     private var repathAt: Double = 0
     private var stuckN = 0
+    private var pathShort = false                    // 길이 목표에 못 미쳐 끝남 (목표 자리가 막힘)
     private var goalRef = SIMD2<Float>(9e9, 9e9), bestD: Float = 0, bestAt: Double = 0   // 다가가는지 감시
     private var clipName = "", clipSince: Double = 0                                       // 같은 되풀이 동작 감시
     private var turnSince: Double = 0, travelSeen: Double = 0
+    private var mvRef = SIMD2<Float>(0, 0), mvYaw: Float = 0, mvAt: Double = 0
+    private var lastDt: Float = 1.0 / 90
     private var lastPos = SIMD3<Float>(0, 0, 0)
     private var velo = SIMD3<Float>(0, 0, 0)
 
@@ -134,7 +137,7 @@ final class Dog {
 
     /// 사람이 사료·물을 붓는 중: 배가 고프면(또는 먹보면) 그릇 앞으로 와서 기다렸다 먹음
     func foodComing(_ b: Prop) {
-        let eat = b.id == "bowl_food"
+        let eat = b.base == "bowl_food"
         guard !baby, act != .eat, act != .drink, act != .held, act != .fall, act != .potty, act != .nurse else { return }
         if act == .sleep && (eat ? pet.food > 0.4 : pet.water > 0.4) { return }
         guard eat ? pet.food < 0.9 : pet.water < 0.8, simd_distance(b.pos, pos) < 4 else { return }
@@ -247,6 +250,7 @@ final class Dog {
                 return stuckN > 2 ? -1 : 0
             }
             path = p; pathGoal = t; repathAt = s.now + 1.5
+            pathShort = (p.last.map { simd_distance($0, t) } ?? 0) > reach + 0.05
         }
         // 이미 지나친 길 점은 건너뜀 (다음 점 쪽으로 넘어섰으면 되돌아가 맴돌지 않게)
         if path.count > 1, simd_dot(path[1] - path[0], xz - path[0]) > 0, simd_distance(xz, path[0]) < 0.3 { path.removeFirst() }
@@ -255,7 +259,9 @@ final class Dog {
         let dw = simd_length(dv)
         if dw < 0.06 * max(0.5, g) || (path.count == 1 && dw <= reach) {
             path.removeFirst()
-            if path.isEmpty { stopMoving(); return simd_distance(xz, t) <= reach + 0.12 ? 1 : -1 }
+            // 목표 자리가 막혀 있으면(사람 몸·다리 둘레 등) 갈 수 있는 가장 가까운 곳에 닿은 것으로 끝냄 —
+            // 0.10.6 까지: 그 자리에서 길을 다시 찾고 또 닿기를 되풀이하며 발만 움직이고 자리는 그대로였음
+            if path.isEmpty { stopMoving(); return simd_distance(xz, t) <= reach + 0.12 || (pathShort && simd_distance(xz, t) < 1.4) ? 1 : -1 }
             return 0
         }
         let want = atan2(dv.x, dv.y)
@@ -263,7 +269,8 @@ final class Dog {
         let omega: Float = baby ? 1.2 : (stage == .senior ? 2.2 : 4.5)
         let turn: Float = omega * dt
         yaw += max(-turn, min(turn, dy))
-        let level = d > 2.0 ? fast : (d > 0.8 ? min(fast, 1) : 0)
+        // 가까운 목표·좁은 곳(길 점이 가까움)에선 걷기 — 빠른 걸음으로 조금씩만 움직여 발과 몸이 따로 놀지 않게
+        let level = dw < 0.25 && path.count > 1 ? 0 : (d > 2.0 ? fast : (d > 0.8 ? min(fast, 1) : 0))
         anim.setGait(gaitName(level))
         // 크게 틀어져 있으면 먼저 돌고, 가까운 점은 그 거리 안에서 돌 수 있는 빠르기로 (돌기 반경 = 빠르기 ÷ 도는 빠르기)
         // — 0.10.3 까지는 반쯤 돈 채 제 빠르기로 걸어 가까운 길 점 둘레를 계속 맴돌 수 있었음
@@ -280,9 +287,11 @@ final class Dog {
         } else if step > 0, nav.walkable(xz.x, xz.y + dir.y * step), abs(dv.y) > 0.01 {
             pos.z += dir.y * step
         } else if step > 0 {
+            // 막힌 걸음: 걸음 동작을 멈추고(제자리 걸음 없이) 길을 다시 찾음
             path.removeAll()
+            stopMoving()
             stuckN += 1
-            if stuckN > 20 { stopMoving(); return -1 }
+            if stuckN > 20 { return -1 }
         }
         return 0
     }
@@ -298,7 +307,8 @@ final class Dog {
             yaw += max(-rate * dt, min(rate * dt, dy))
             return abs(dy) < 0.25
         }
-        let standing = anim.posture == standName || anim.moving
+        // 이음 동작(일어서는 중)이 끝나야 선 것으로 침 — 그 전에 돌면 다리를 구부린 채 빙글빙글 돌았음 (0.10.7)
+        let standing = (anim.posture == standName && !anim.inTransition) || anim.moving
         if !standing {
             if abs(dy) < 1.1 { return abs(dy) < 0.6 }
             if !anim.busy && !baby { anim.setPosture(standName) }
@@ -347,7 +357,7 @@ final class Dog {
             let c = SIMD2<Float>(p.pos.x, p.pos.z)
             switch p.id {
             case "bowl_food", "bowl_water", "poop":
-                let rr: Float = p.id == "poop" ? 0.035 : 0.085
+                let rr: Float = p.base == "poop" ? 0.035 : 0.085
                 let ab = b - a
                 let t = max(0, min(1, simd_dot(c - a, ab) / max(1e-6, simd_dot(ab, ab))))
                 let q = a + ab * t
@@ -378,6 +388,28 @@ final class Dog {
             pos.x += push.x / pl * m
             pos.z += push.y / pl * m
         }
+        // 내 몸: 강아지 몸이 내 몸(서 있으면 발 둘레, 앉아 있으면 무릎·발까지) 안에 들어와 있으면 비켜 섬 (0.10.7).
+        // 길찾기는 내 몸을 피하지만, 내가 강아지 쪽으로 움직이거나 먹기·당기기·내려놓기처럼 길찾기 밖의 움직임으로
+        // 강아지가 내 몸 안에 들어가 있어 만질 수 없었음. 순간이동 없이 초당 0.6m 로 슬며시 비킴
+        if let fy = s.room.floorY {
+            let u = SIMD2<Float>(s.userPos.x, s.userPos.z), uf = SIMD2<Float>(s.userFwd.x, s.userFwd.z)
+            var spots: [(SIMD2<Float>, Float)] = [(u - uf * 0.04, 0.2)]
+            if s.userPos.y - fy < 1.25 { spots += [(u + uf * 0.22, 0.15), (u + uf * 0.42, 0.13)] }
+            var out = SIMD2<Float>(0, 0)
+            let ab = b - a
+            for (c, rr) in spots {
+                let t = max(0, min(1, simd_dot(c - a, ab) / max(1e-6, simd_dot(ab, ab))))
+                let q = a + ab * t
+                let d = q - c, dl = simd_length(d), need = rr + wid
+                if dl < need { out += (dl > 1e-4 ? d / dl : SIMD2<Float>(-f2.y, f2.x)) * (need - dl) }
+            }
+            let ol = simd_length(out)
+            if ol > 1e-4 {
+                let m = min(ol, 0.6 * lastDt)
+                pos.x += out.x / ol * m
+                pos.z += out.y / ol * m
+            }
+        }
     }
 
     /// 같은 되풀이 동작이 비현실적으로 길게 이어지지 않게 (0.10.4):
@@ -385,6 +417,11 @@ final class Dog {
     /// ② 놀이·조르기·땅 파기 같은 되풀이 동작이 정한 시간보다 길면 끝내고 다른 일을 고름
     ///    (잠·먹기·마시기·씹기·안기기·쓰다듬기처럼 끝나는 때가 따로 있는 것은 제외)
     private func watchLoops() {
+        // 제자리 걸음: 걸음 동작인데 1.2초 동안 걸음 빠르기의 30% 도 못 움직이고 돌지도 않았으면 걸음을 멈춤 (0.10.7)
+        if anim.moving && !turnGait {
+            if simd_distance(xz, mvRef) > max(0.02, 0.3 * anim.speed * 1.2) || abs(Q.adiff(yaw, mvYaw)) > 0.5 { mvRef = xz; mvYaw = yaw; mvAt = s.now }
+            else if s.now - mvAt > 1.2 { stopMoving(); path.removeAll(); mvAt = s.now }
+        } else { mvRef = xz; mvYaw = yaw; mvAt = s.now }
         if turnGait && path.isEmpty {
             if turnSince == 0 { turnSince = s.now }
             else if s.now - turnSince > 3 { turnSince = 0; turnGait = false; turning = false; anim.setGait(nil) }
@@ -488,7 +525,7 @@ final class Dog {
         p.heldBy = nil
         p.setMode(.kinematic)
         anim.overlay("carry", hold: true)
-        if p.id == "squeak" { fx("squeak", gain: -8) }
+        if p.base == "squeak" { fx("squeak", gain: -8) }
     }
 
     /// 처음 만났을 때·다시 왔을 때
@@ -621,6 +658,7 @@ final class Dog {
     // MARK: 매 화면
     func tick(_ dt: Float) {
         guard dt > 0 else { return }
+        lastDt = min(0.1, dt)
         let now = s.now
         anim.age = pet.age(Date().timeIntervalSince1970)
         actT += dt
@@ -698,7 +736,7 @@ final class Dog {
             switch e {
             case "step":
                 if g > 0.45 { fx(g < 0.7 ? "stepsoft" : "step", gain: anim.current == "run" ? -24 : -30) }
-            case "squeak": if carry?.id == "squeak" || target?.id == "squeak" { fx("squeak", gain: -8) }
+            case "squeak": if carry?.base == "squeak" || target?.base == "squeak" { fx("squeak", gain: -8) }
             case "whimper": say("whimper", gain: -16)
             case "yawn": say("yawn", gain: -18)
             case "sneeze": say("sneeze", gain: -12)
@@ -706,7 +744,7 @@ final class Dog {
             }
         }
         // 삑삑이를 물고 있는 동안(들고 다니기·흔들기·당기기·물어 오기) 씹을 때마다 삑 (0.10.2 까지: 주울 때 한 번만 났음)
-        let squeaky = carry?.id == "squeak" || (act == .tug && target?.id == "squeak")
+        let squeaky = carry?.base == "squeak" || (act == .tug && target?.base == "squeak")
         if squeaky && s.now > nextSqueak {
             let rough = anim.current == "shake_toy" || act == .tug
             nextSqueak = s.now + Double.random(in: rough ? 0.5...1.4 : 1.0...3.0)
@@ -717,8 +755,8 @@ final class Dog {
         if let c = carry {
             let hq = headRotWorld
             let hf = hq.act(SIMD3<Float>(0, 0, 1))
-            c.entity.setPosition(mouthWorld + hf * (c.id == "ball" ? 0.012 : 0.004) - SIMD3<Float>(0, c.id == "blanky" ? 0.03 : 0, 0), relativeTo: nil)
-            c.entity.setOrientation(c.id == "blanky" ? hq * Q.rz(.pi / 2) : hq * Q.ry(.pi / 2), relativeTo: nil)
+            c.entity.setPosition(mouthWorld + hf * (c.base == "ball" ? 0.012 : 0.004) - SIMD3<Float>(0, c.base == "blanky" ? 0.03 : 0, 0), relativeTo: nil)
+            c.entity.setOrientation(c.base == "blanky" ? hq * Q.rz(.pi / 2) : hq * Q.ry(.pi / 2), relativeTo: nil)
         }
         _ = now
     }
@@ -727,7 +765,7 @@ final class Dog {
 
     private func lookTarget() -> SIMD3<Float>? {
         if (act == .eat || act == .drink), let b = target, phase >= 1 { return SIMD3<Float>(b.pos.x, b.pos.y + b.contentY - 0.004, b.pos.z) }
-        if let t = s.props.first(where: { $0.heldBy != nil && ($0.id == "treat" || $0.id == "dental" || $0.kind == .toy || $0.id == "bottle") }),
+        if let t = s.props.first(where: { $0.heldBy != nil && ($0.base == "treat" || $0.base == "dental" || $0.kind == .toy || $0.base == "bottle") }),
            simd_distance(t.pos, pos) < 1.6, !baby { return t.pos }
         if touching, let h = s.room.hands.first(where: { $0.seen }) { return h.palm }
         if act == .fetch || act == .toy, let t = target, carry == nil { return t.pos }
@@ -743,7 +781,7 @@ final class Dog {
         guard act != .held, act != .fall, act != .potty else { return }
         // 젖병: 젖꼭지가 입 가까이. 자고 있어도 배고프면 깨어 먹음
         // (0.4.0: 갓난 강아지는 늘 자는 상태라 자는 중엔 젖병을 대도 안 먹었음)
-        if act != .nurse, let b = s.props.first(where: { $0.id == "bottle" && $0.heldBy != nil }),
+        if act != .nurse, let b = s.props.first(where: { $0.base == "bottle" && $0.heldBy != nil }),
            simd_distance(b.pos, mouthWorld) < 0.10 {
             // 젖떼기: 5주가 지나면 젖병을 거절 (0.9: 7주차에도 젖병을 먹어 게이지가 찼음 — 젖병은 4주까지)
             if age >= Double(Catalog.weanAge) {
@@ -776,10 +814,10 @@ final class Dog {
         if act == .sleep { return }
         // 손에 든 간식·장난감을 향해
         if !baby && act != .trick && act != .eat && act != .nurse && act != .petted && act != .tug && act != .fetch {
-            if let t = s.props.first(where: { $0.heldBy != nil && ($0.id == "treat" || $0.id == "dental") }), simd_distance(t.pos, pos) < 1.8 {
+            if let t = s.props.first(where: { $0.heldBy != nil && ($0.base == "treat" || $0.base == "dental") }), simd_distance(t.pos, pos) < 1.8 {
                 target = t
                 begin(.trick)
-            } else if let t = s.props.first(where: { $0.heldBy != nil && ["rope", "blanky", "squeak", "chewbone"].contains($0.id) }),
+            } else if let t = s.props.first(where: { $0.heldBy != nil && ["rope", "blanky", "squeak", "chewbone"].contains($0.base) }),
                       simd_distance(t.pos, pos) < 1.2, pet.energy > 0.2, t.pos.y - pos.y < 0.5, stage.rawValue >= Stage.social.rawValue {
                 // 손에 든 인형·장난감을 입 가까이 → 물고 당기기 (0.5.x 는 줄만 했음)
                 target = t
@@ -960,7 +998,7 @@ final class Dog {
             if p.food < 0.35 && now > nextVoice { nextVoice = now + Double.random(in: 4...9); say("mewl", gain: -12, head: "whine"); anim.play("nb_root", then: "newborn"); begin(.idle, for: 3); return }
             if sleepy || p.energy < 0.8 { begin(.sleep); return }
             // 따뜻한 곳(담요·손) 쪽으로 꼬물꼬물
-            if let b = s.prop("blanket") ?? s.prop("bed"), simd_distance(b.pos, pos) > 0.15 { spot = SIMD2<Float>(b.pos.x, b.pos.z); begin(.wander); return }
+            if let b = s.propBase("blanket") ?? s.propBase("bed"), simd_distance(b.pos, pos) > 0.15 { spot = SIMD2<Float>(b.pos.x, b.pos.z); begin(.wander); return }
             if stage == .transitional && Bool.random() { anim.play("wobble", then: "newborn") }      // 눈 뜨는 시기: 비틀비틀 일어서 보기
             else { anim.play(Bool.random() ? "nb_squirm" : "nb_root", then: "newborn") }
             begin(.idle, for: 4)
@@ -1135,9 +1173,9 @@ final class Dog {
 
     /// 잠자리 위 누울 자리: 가운데에 가깝고 그릇과 떨어진 곳
     private func bedSpot() -> SIMD2<Float>? {
-        guard let b = s.prop("bed") ?? s.prop("blanket"), b.heldBy == nil else { return nil }
+        guard let b = s.propBase("bed") ?? s.propBase("blanket"), b.heldBy == nil else { return nil }
         let c = SIMD2<Float>(b.pos.x, b.pos.z)
-        let bowls = s.props.filter { ($0.id == "bowl_food" || $0.id == "bowl_water") && $0.heldBy == nil }.map { SIMD2<Float>($0.pos.x, $0.pos.z) }
+        let bowls = s.props.filter { ($0.base == "bowl_food" || $0.base == "bowl_water") && $0.heldBy == nil }.map { SIMD2<Float>($0.pos.x, $0.pos.z) }
         var best = c
         var bs: Float = -99
         var offs: [SIMD2<Float>] = [SIMD2<Float>(0, 0)]
@@ -1307,7 +1345,9 @@ final class Dog {
         let u = SIMD2<Float>(s.userPos.x, s.userPos.z)
         switch phase {
         case 0:
-            let r = travel(dt, to: u, reach: 0.5 + 0.2 * g, fast: 2)
+            // 먼저 알아채고(귀 쫑긋·돌아봄) 종종걸음으로 옴 — 0.10.6 까지: 나오자마자 달리기(초당 3.4m)로 날아오듯 왔음
+            if actT < 0.8 { if actT < 0.05 { anim.overlay("ear_perk") }; _ = face(s.userPos, dt); return }
+            let r = travel(dt, to: u, reach: 0.5 + 0.2 * g, fast: 1)
             if r == -1 { begin(.idle, for: 1); return }
             if r == 1 { phase = 1; until = s.now + 5; bark() }
         default:
@@ -1383,7 +1423,7 @@ final class Dog {
             // 장난감마다 그 물건다운 놀이 (0.10.3):
             // 공 = 코·앞발로 툭 쳐서 굴리고 쫓아감, 로프 = 물고 머리를 세게 흔들며 으르렁,
             // 삑삑이 = 엎드려 씹으며 계속 삑삑 / 물고 흔들며 삑삑, 씹는 뼈 = 앞발로 붙잡고 오래 씹음, 블랭키씨 = 잠자리로 물고 가 껴안음
-            if t.id == "ball" && ballNudges < 3 && Float.random(in: 0...1) < 0.65 {
+            if t.base == "ball" && ballNudges < 3 && Float.random(in: 0...1) < 0.65 {
                 ballNudges += 1
                 anim.play(Bool.random() ? "paw_at" : "pounce", then: "stand")
                 var d = t.pos - pos; d.y = 0
@@ -1396,8 +1436,8 @@ final class Dog {
                 return
             }
             ballNudges = 0
-            let chewy = t.id == "chewbone" || t.id == "blanky" || t.id == "squeak"
-            let chewP: Float = t.id == "chewbone" ? 0.85 : (t.id == "squeak" ? 0.45 : 0.6)
+            let chewy = t.base == "chewbone" || t.base == "blanky" || t.base == "squeak"
+            let chewP: Float = t.base == "chewbone" ? 0.85 : (t.base == "squeak" ? 0.45 : 0.6)
             if bringToUser && stage != .senior {
                 // 물어 와서 사람 발치에 내려놓고 놀자고 조름 (던져 주면 쫓아감)
                 bringToUser = false
@@ -1407,7 +1447,7 @@ final class Dog {
                 pet.bond = min(1, pet.bond + 0.002)
                 return
             }
-            if t.id == "blanky" && Float.random(in: 0...1) < 0.55, let bed = s.prop("bed") ?? s.prop("blanket"), simd_distance(bed.pos, t.pos) > 0.25 {
+            if t.base == "blanky" && Float.random(in: 0...1) < 0.55, let bed = s.propBase("bed") ?? s.propBase("blanket"), simd_distance(bed.pos, t.pos) > 0.25 {
                 // 애착 인형: 물고 잠자리로 가서 껴안고 엎드림
                 pickUp(t)
                 spot = SIMD2<Float>(bed.pos.x, bed.pos.z)
@@ -1418,13 +1458,13 @@ final class Dog {
             if chewy && Float.random(in: 0...1) < chewP {
                 // 엎드려 씹기·껴안고 핥기 (씹는 뼈는 오래)
                 anim.setPosture("down")
-                anim.hold(t.id == "blanky" ? "lick_paw" : "chew")
-                phase = 3; until = s.now + (t.id == "chewbone" ? Double.random(in: 15...30) : Double.random(in: 8...18))
+                anim.hold(t.base == "blanky" ? "lick_paw" : "chew")
+                phase = 3; until = s.now + (t.base == "chewbone" ? Double.random(in: 15...30) : Double.random(in: 8...18))
                 nextVoice = s.now + 0.6
             } else {
                 pickUp(t)
                 phase = 2; until = s.now + Double.random(in: 3...6)
-                shakeIt = t.id == "rope" || t.id == "squeak" || (t.id == "ball" && Float.random(in: 0...1) < 0.3)
+                shakeIt = t.base == "rope" || t.base == "squeak" || (t.base == "ball" && Float.random(in: 0...1) < 0.3)
                 if !shakeIt, let q = s.room.nav.randomSpot(near: xz, rMin: 0.6, rMax: 1.8) { spot = q }
             }
             pet.fun = min(1, pet.fun + 0.08)
@@ -1432,7 +1472,7 @@ final class Dog {
             if carry == nil { if s.now > until { begin(.idle, for: 1) }; return }       // 아직 무는 중
             if shakeIt {
                 if !anim.busy { anim.hold("shake_toy") }
-                if t.id == "rope" && s.now > nextVoice { nextVoice = s.now + Double.random(in: 1.2...2.6); say(age < 90 ? "growl_play_pup" : "growl_play", gain: -18) }
+                if t.base == "rope" && s.now > nextVoice { nextVoice = s.now + Double.random(in: 1.2...2.6); say(age < 90 ? "growl_play_pup" : "growl_play", gain: -18) }
             } else if !anim.busy { _ = travel(dt, to: spot, reach: 0.15, fast: 1) }
             pet.fun = min(1, pet.fun + 0.01 * dt)
             if s.now > until { anim.stop(); putDown(); phase = 6; until = s.now + 0.8 }
@@ -1451,7 +1491,7 @@ final class Dog {
             }
         default:
             pet.fun = min(1, pet.fun + 0.012 * dt)
-            if s.now > nextVoice && t.id == "squeak" { nextVoice = s.now + Double.random(in: 0.7...2.2); anim.overlay("squeak_bite") }
+            if s.now > nextVoice && t.base == "squeak" { nextVoice = s.now + Double.random(in: 0.7...2.2); anim.overlay("squeak_bite") }
             if s.now > until { anim.stop(); begin(.idle, for: 2) }
         }
     }
@@ -1460,7 +1500,7 @@ final class Dog {
     func noticed(_ p: Prop) {
         guard act != .sleep, act != .held, act != .potty, act != .eat, act != .nurse, simd_distance(p.pos, pos) < 2.5 else { return }
         if baby {
-            if p.id == "blanky" && age >= 7 { spot = SIMD2<Float>(p.pos.x, p.pos.z); begin(.wander); say("mewl", gain: -18) }
+            if p.base == "blanky" && age >= 7 { spot = SIMD2<Float>(p.pos.x, p.pos.z); begin(.wander); say("mewl", gain: -18) }
             return
         }
         guard act == .idle || act == .wander || act == .watch || act == .ask || act == .come else { return }
@@ -1518,7 +1558,7 @@ final class Dog {
             return
         }
         if touching {
-            let brush = s.props.contains { $0.id == "brush" && $0.heldBy != nil && simd_distance($0.pos, pos) < 0.35 }
+            let brush = s.props.contains { $0.base == "brush" && $0.heldBy != nil && simd_distance($0.pos, pos) < 0.35 }
             p.love = min(1, p.love + 0.035 * dt)
             p.bond = min(1, p.bond + 0.0012 * dt)
             strokes += dt
@@ -1708,7 +1748,7 @@ final class Dog {
         p.food = min(1, p.food + 0.04)
         p.fun = min(1, p.fun + 0.05)
         p.bond = min(1, p.bond + 0.006)
-        if t.id == "dental" { p.clean = min(1, p.clean + 0.05) }
+        if t.base == "dental" { p.clean = min(1, p.clean + 0.05) }
         pet = p
         s.removeProp(t)
         target = nil
@@ -1730,7 +1770,7 @@ final class Dog {
         let now = s.now
         heardWords.append((w, now))
         // 간식으로 가르치는 중이면 들은 말을 잠깐 보여 줌 (마이크가 알아들었는지 바로 알 수 있게)
-        if act == .trick || s.props.contains(where: { ($0.id == "treat" || $0.id == "dental") && $0.heldBy != nil }) { s.toast("들었어요 · '\(w)'") }
+        if act == .trick || s.props.contains(where: { ($0.base == "treat" || $0.base == "dental") && $0.heldBy != nil }) { s.toast("들었어요 · '\(w)'") }
         heardWords.removeAll { now - $0.1 > 15 }
         let name = pet.name.lowercased().replacingOccurrences(of: " ", with: "")
         if name.count >= 2 && w.contains(name) {
@@ -1809,7 +1849,7 @@ final class Dog {
     /// 젖병 한 번 = 분유 1회분(pet.bottle 1). 한 번 탄 분유는 다 먹을 때까지 남아 있어 다시 대면 이어 먹음.
     /// (0.4.0: 젖병이 입에서 조금만 떨어졌다 닿아도 새 분유를 써서 8회분이 금방 없어졌고, 다 먹은 뒤에도 게이지가 다 차지 않았음)
     private func nurseStep(_ dt: Float) {
-        guard let b = s.props.first(where: { $0.id == "bottle" && $0.heldBy != nil }), simd_distance(b.pos, mouthWorld) < 0.16 else {
+        guard let b = s.props.first(where: { $0.base == "bottle" && $0.heldBy != nil }), simd_distance(b.pos, mouthWorld) < 0.16 else {
             anim.stop()
             begin(.idle, for: 2)
             return
