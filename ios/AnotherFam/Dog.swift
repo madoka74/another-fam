@@ -1747,6 +1747,20 @@ final class Dog {
         let tp = t.pos
         let d = SIMD2<Float>(tp.x - pos.x, tp.z - pos.z)
         let l = simd_length(d)
+        // 짖어 (0.10.12): 간식을 내 얼굴 높이 이상으로 번쩍 들어 올리면(팸이 절대 닿지 않는 높이), 곁에 와 앉아 올려다보다
+        // 2초쯤 뒤 '달라고' 짖음 → 간식을 내려 4초 안에 입에 대 주면 배움 (생후 2개월부터).
+        // 팸 머리 근처에서 하는 앉아·애교·일어서와 겹치지 않음 (등 뒤로 숨기면 손이 안 보여 간식을 놓칠 수 있어 높이로 함)
+        let u = SIMD2<Float>(s.userPos.x, s.userPos.z)
+        let hidden = tp.y > s.userPos.y - 0.1 && tp.y - pos.y > 0.75 && simd_distance(SIMD2<Float>(tp.x, tp.z), u) < 0.5
+        if hidden && simd_distance(xz, u) < 1.6 {
+            stopMoving()
+            _ = face(s.userPos, dt, rate: 4)
+            if anim.posture == "stand" && !anim.busy && actT > 1 { anim.setPosture(baby ? "newborn" : "sit") }
+            demandT += dt
+            if demandT > 2.0 && !anim.busy && age >= 56 { demandT = 0; bark(); barkedAt = s.now }
+            lureT = 0
+            return
+        }
         // 간식 앞까지 옴
         if l > 0.42 * g + 0.12 && anim.posture == "stand" {
             let stand: SIMD2<Float> = SIMD2<Float>(tp.x, tp.z) - d / max(1e-3, l) * (0.3 * g + 0.08)
@@ -1785,11 +1799,24 @@ final class Dog {
         } else { lastLureAng = nil }
         spinAcc *= max(0, 1 - dt * 0.6)
         if abs(spinAcc) > 2.0 || s.now < spunAt { lureT = 0; return }      // 크게 돌리는 중(115° 넘게)엔 앉지 않고 따라 돎      // 돌리는 중엔 앉지 않고 따라 돎
-        // 짖어: 간식을 손이 닿지 않게 머리 위 앞쪽으로 높이 들고 기다리면 2.5초쯤 뒤 '달라고' 짖음 (생후 2개월부터)
-        if h > headH + 0.26 * g && l >= 0.22 && l < 0.7 && age >= 56 && anim.posture != "beg" && anim.posture != "hind" {
-            demandT += dt
-            if demandT > 2.5 && !anim.busy { demandT = 0; bark(); barkedAt = s.now }   // 이 '달라는 짖음'에만 짖어를 배움
-        } else { demandT = 0 }
+        demandT = 0
+        // 손·코 (0.10.12): 간식은 한 손에 든 채, 다른 빈 손을 내밂 — 간식을 들고 있으면 팸이 간식만 보고 있어서
+        // 0.10.11 까지의 '빈 손 내밀고 앞발 올리면 간식'은 간식을 꺼내 오는 동안 시간이 지나 배울 수 없었음
+        //  손: 앉아 있는 팸 가슴 앞에 빈 손바닥을 낮게(턱 아래) 0.6초 → 앞발을 올림 (생후 8주부터)
+        //  코: 서 있는 팸 코앞(10cm 안, 코 높이)에 빈 손바닥을 0.6초 → 코를 댐
+        if let hnd = s.room.hands.enumerated().first(where: { $0.offset != t.heldBy && $0.element.seen && !$0.element.fist })?.element,
+           simd_length(hnd.vel) < 0.25, !anim.busy {
+            let nose = mouthWorld
+            let hp = SIMD2<Float>(hnd.palm.x - pos.x, hnd.palm.z - pos.z)
+            let ahead = simd_dot(hp, SIMD2<Float>(sin(yaw), cos(yaw)))
+            if anim.posture == "sit" && hnd.palm.y < nose.y - 0.03 && hnd.palm.y > pos.y && ahead > 0.05 && simd_length(hp) < 0.18 + 0.15 * g && age >= 56 {
+                offerHandT += dt
+                if offerHandT > 0.6 && s.now > pawAt + 2 { offerHandT = 0; anim.play(Bool.random() ? "paw_l" : "paw_r", then: "sit"); pawAt = s.now; return }
+            } else if anim.posture == "stand" && simd_distance(hnd.palm, nose) < 0.10 && abs(hnd.palm.y - nose.y) < 0.05 {
+                offerHandT += dt
+                if offerHandT > 0.6 && s.now > noseAt + 2 { offerHandT = 0; anim.overlay("sniff_hand"); fx("sniff", gain: -22); noseAt = s.now; return }
+            } else { offerHandT = 0 }
+        } else { offerHandT = 0 }
         if want.isEmpty { lureT = 0; return }
         if want != lureKind { lureKind = want; lureT = 0 }
         let skill = pet.tricks[want] ?? 0
@@ -1805,12 +1832,10 @@ final class Dog {
         var p = pet
         // 방금 한 재주에 대한 상: 굴러·손(앞발)·말로 시킨 재주·간식으로 이끈 자세 차례로
         var learned = lured
-        // 0.10.11 새 재주: 돌아(간식을 머리 둘레로 한 바퀴)·코(내민 손바닥에 코)·짖어(간식을 높이 들고 기다리면 짖음)
-        if s.now - rolledAt < 5 { learned = "roll" }
-        else if s.now - spunAt < 4 { learned = "spin" }
-        else if s.now - noseAt < 3 { learned = "touch" }
-        else if s.now - barkedAt < 3 { learned = "speak" }
-        else if learned == nil && s.now - pawAt < 8 { learned = "paw" }
+        // 동작 재주(굴러·돌아·손·코·짖어)는 한 직후 간식, 자세(앉아·엎드려·애교·일어서)는 1초 유지 뒤 간식
+        // 동작 재주는 '가장 최근에 한 것' 하나만 (0.10.12: 코를 댄 뒤 앞발을 올렸는데 '코'로 배우던 것)
+        let acts: [(String, Double, Double)] = [("roll", rolledAt, 5), ("spin", spunAt, 4), ("paw", pawAt, 6), ("touch", noseAt, 4), ("speak", barkedAt, 4)]
+        if let a = acts.filter({ s.now - $0.1 < $0.2 }).max(by: { $0.1 < $1.1 }) { learned = a.0 }
         else if learned == nil && s.now - commandAt < 8 && !commandTrick.isEmpty { learned = commandTrick }
         if let k = learned, !k.isEmpty { associate(k, &p) }
         commandAt = -99; pawAt = -99; rolledAt = -99; spunAt = -99; noseAt = -99; barkedAt = -99
@@ -1833,7 +1858,7 @@ final class Dog {
     private var pendingTrick: String?
     private var commandAt: Double = -99, pawAt: Double = -99, rolledAt: Double = -99
     private var spunAt: Double = -99, noseAt: Double = -99, barkedAt: Double = -99
-    private var spinAcc: Float = 0, lastLureAng: Float?, demandT: Float = 0
+    private var spinAcc: Float = 0, lastLureAng: Float?, demandT: Float = 0, offerHandT: Float = 0
     private var commandTrick = ""
 
     /// 사람이 한 낱말. 이름이면 돌아보고 오고, 배운 말이면 익힌 만큼 그 재주를 함 (모르면 고개만 갸웃)
