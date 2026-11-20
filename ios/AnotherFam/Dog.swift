@@ -943,6 +943,8 @@ final class Dog {
                     pendingTrick = nil
                     if k == "roll" { anim.play("roll_over", then: "down"); rolledAt = now + 1.6 }
                     if k == "paw" { anim.play(Bool.random() ? "paw_l" : "paw_r", then: "sit"); pawAt = now }
+                    if k == "spin" { anim.play(Bool.random() ? "spin_l" : "spin_r", then: "stand"); spunAt = now + 1.6 }
+                    if k == "speak" { bark(); barkedAt = now }
                 }
                 if now > until { begin(.idle, for: 1) }
                 return
@@ -1709,7 +1711,7 @@ final class Dog {
             let stand: SIMD2<Float> = SIMD2<Float>(h.palm.x, h.palm.z) - d / l * (0.16 * g + 0.05)
             let r = travel(dt, to: stand, reach: 0.07, fast: 0)
             if r == -1 || actT > 8 { begin(.idle, for: 1); return }
-            if r == 1 { phase = 1; until = s.now + 2; anim.overlay("sniff_hand"); fx("sniff", gain: -20) }
+            if r == 1 { phase = 1; until = s.now + 2; anim.overlay("sniff_hand"); fx("sniff", gain: -20); noseAt = s.now }
         case 1:
             _ = face(h.palm, dt)
             if s.now > until {
@@ -1774,6 +1776,20 @@ final class Dog {
                 return
             }
         }
+        // 돌아: 선 채로 간식을 머리 높이에서 몸 둘레로 빙 돌리면(240° 넘게) 따라 한 바퀴 돎 (생후 3개월부터)
+        if anim.posture == "stand" && age >= 90 && l < 0.45 && h > 0.05 && h < headH + 0.2 * g {
+            let a = atan2(d.x, d.y)
+            if let la = lastLureAng { var da = a - la; if da > .pi { da -= 2 * .pi } else if da < -.pi { da += 2 * .pi }; spinAcc += da }
+            lastLureAng = a
+            if abs(spinAcc) > 4.2 && !anim.busy { anim.play(spinAcc > 0 ? "spin_l" : "spin_r", then: "stand"); spunAt = s.now + 1.6; spinAcc = 0; return }
+        } else { lastLureAng = nil }
+        spinAcc *= max(0, 1 - dt * 0.6)
+        if abs(spinAcc) > 2.0 || s.now < spunAt { lureT = 0; return }      // 크게 돌리는 중(115° 넘게)엔 앉지 않고 따라 돎      // 돌리는 중엔 앉지 않고 따라 돎
+        // 짖어: 간식을 손이 닿지 않게 머리 위 앞쪽으로 높이 들고 기다리면 2.5초쯤 뒤 '달라고' 짖음 (생후 2개월부터)
+        if h > headH + 0.26 * g && l >= 0.22 && l < 0.7 && age >= 56 && anim.posture != "beg" && anim.posture != "hind" {
+            demandT += dt
+            if demandT > 2.5 && !anim.busy { demandT = 0; bark(); barkedAt = s.now }   // 이 '달라는 짖음'에만 짖어를 배움
+        } else { demandT = 0 }
         if want.isEmpty { lureT = 0; return }
         if want != lureKind { lureKind = want; lureT = 0 }
         let skill = pet.tricks[want] ?? 0
@@ -1789,11 +1805,15 @@ final class Dog {
         var p = pet
         // 방금 한 재주에 대한 상: 굴러·손(앞발)·말로 시킨 재주·간식으로 이끈 자세 차례로
         var learned = lured
+        // 0.10.11 새 재주: 돌아(간식을 머리 둘레로 한 바퀴)·코(내민 손바닥에 코)·짖어(간식을 높이 들고 기다리면 짖음)
         if s.now - rolledAt < 5 { learned = "roll" }
+        else if s.now - spunAt < 4 { learned = "spin" }
+        else if s.now - noseAt < 3 { learned = "touch" }
+        else if s.now - barkedAt < 3 { learned = "speak" }
         else if learned == nil && s.now - pawAt < 8 { learned = "paw" }
         else if learned == nil && s.now - commandAt < 8 && !commandTrick.isEmpty { learned = commandTrick }
         if let k = learned, !k.isEmpty { associate(k, &p) }
-        commandAt = -99; pawAt = -99; rolledAt = -99
+        commandAt = -99; pawAt = -99; rolledAt = -99; spunAt = -99; noseAt = -99; barkedAt = -99
         p.food = min(1, p.food + 0.04)
         p.fun = min(1, p.fun + 0.05)
         p.bond = min(1, p.bond + 0.006)
@@ -1812,6 +1832,8 @@ final class Dog {
     private var heardWords: [(String, Double)] = []
     private var pendingTrick: String?
     private var commandAt: Double = -99, pawAt: Double = -99, rolledAt: Double = -99
+    private var spunAt: Double = -99, noseAt: Double = -99, barkedAt: Double = -99
+    private var spinAcc: Float = 0, lastLureAng: Float?, demandT: Float = 0
     private var commandTrick = ""
 
     /// 사람이 한 낱말. 이름이면 돌아보고 오고, 배운 말이면 익힌 만큼 그 재주를 함 (모르면 고개만 갸웃)
@@ -1847,6 +1869,11 @@ final class Dog {
         case "beg", "hind": anim.setPosture(k)
         case "roll": anim.setPosture("down"); pendingTrick = "roll"
         case "paw": anim.setPosture("sit"); pendingTrick = "paw"
+        case "spin": anim.setPosture("stand"); pendingTrick = "spin"
+        case "speak": pendingTrick = "speak"
+        case "touch":
+            // 내민 손이 보이면 다가가 코를 댐
+            if s.room.hands.contains(where: { $0.seen && simd_distance($0.palm, pos) < 1.8 }) { begin(.hand); commandAt = s.now; commandTrick = k }
         default: break
         }
     }
@@ -1867,10 +1894,10 @@ final class Dog {
             // 배우는 만큼 바로 보여 줌 (0.9: 20%·80% 넘을 때만 알려 줘 배우는지 알 수 없었음)
             let v2 = m[k] ?? 0
             // 자세(재주)와 말을 구분해 보여 줌 — 0.10.4 까지는 자세 이름도 '엎드려'라 자세 100% 가 말을 익힌 것처럼 보였음
-            if before < 0.8 && v2 >= 0.8 { s.toast("말 '\(w)' 익힘 → 이제 '\(w)' 하면 \(Dog.trickTitle(k)) 자세를 해요") }
-            else { s.toast("말 '\(w)' → \(Dog.trickTitle(k)) 자세 · 배우는 중 \(Int(v2 * 100))%") }
+            if before < 0.8 && v2 >= 0.8 { s.toast("말 '\(w)' 익힘 → 이제 '\(w)' 하면 '\(Dog.trickTitle(k))' 재주를 해요") }
+            else { s.toast("말 '\(w)' → '\(Dog.trickTitle(k))' 재주 · 배우는 중 \(Int(v2 * 100))%") }
         }
-        if ws.isEmpty { s.toast("\(Dog.trickTitle(k)) 자세 \(Int(v * 100))% · 말은 못 들었어요") }
+        if ws.isEmpty { s.toast("'\(Dog.trickTitle(k))' 재주 \(Int(v * 100))% · 말은 못 들었어요") }
         // 너무 많아지면 약한 짝부터 버림
         if p.words.count > 80 {
             let keep = p.words.sorted { ($0.value.values.max() ?? 0) > ($1.value.values.max() ?? 0) }.prefix(60)
@@ -1880,14 +1907,17 @@ final class Dog {
     }
 
     /// 인식기에 미리 알려 줄 흔한 재주 말 (어떤 말로 가르칠지는 사람 마음 — 이것은 알아듣기 쉽게 돕는 것일 뿐)
-    nonisolated static let cueWords = ["앉아", "엎드려", "손", "굴러", "일어서", "서", "빵", "기다려", "이리와", "앉자", "옳지", "잘했어"]
+    nonisolated static let cueWords = ["앉아", "엎드려", "손", "굴러", "일어서", "서", "애교", "돌아", "짖어", "코", "기다려", "이리와", "앉자", "옳지", "잘했어"]
 
     nonisolated static func trickTitle(_ k: String) -> String {
         switch k {
         case "sit": return "앉아"
         case "down": return "엎드려"
-        case "beg": return "빵야 자세"
-        case "hind": return "두 발로 서기"
+        case "beg": return "애교"
+        case "hind": return "일어서"
+        case "spin": return "돌아"
+        case "speak": return "짖어"
+        case "touch": return "코"
         case "roll": return "굴러"
         case "paw": return "손"
         default: return k
