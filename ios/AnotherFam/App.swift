@@ -92,6 +92,9 @@ final class AppModel {
     }
 
     /// 시험: '함께한 날'을 정함 (입양한 때를 그만큼 앞당김). 그 뒤로는 그 나이에서 시간이 그대로 흐름
+    /// 잘못 배운 말 지우기 (설정 › 목소리)
+    func forgetWord(_ w: String) { mutate { $0.words[w] = nil } }
+
     func setTogetherDays(_ days: Double) {
         let d = min(Sim.maxAge / Sim.ageRate, max(0, days))
         mutate { p in

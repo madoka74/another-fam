@@ -94,6 +94,7 @@ final class PlaySession {
         if let note = await room.start() { toast(note) }
         ear.onWord = { [weak self] w in self?.dog?.hear(w) }
         ear.hint(Dog.cueWords + [pet.name] + Array(pet.words.keys))
+        ear.name = pet.name.lowercased().replacingOccurrences(of: " ", with: "")
         Task { if let why = await ear.start() { toast(why) } }
         now = CACurrentMediaTime()
         startAt = now

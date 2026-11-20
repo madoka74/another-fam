@@ -377,8 +377,14 @@ struct SettingsTab: View {
                         guard let b = m.max(by: { $0.value < $1.value }), b.value >= 0.2 else { return nil }
                         return (w, Dog.trickTitle(b.key), b.value)
                     }.sorted { $0.2 > $1.2 }
-                    ForEach(list.prefix(12), id: \.0) { it in
-                        LabeledContent("'\(it.0)' → \(it.1)", value: "\(Int(it.2 * 100))%")
+                    ForEach(list.prefix(20), id: \.0) { it in
+                        // 잘못 배운 말은 지울 수 있게 (0.10.10) — 한 줄에 단추가 있으니 .borderless (줄 전체가 눌리지 않게)
+                        HStack {
+                            LabeledContent("'\(it.0)' → \(it.1)", value: "\(Int(it.2 * 100))%")
+                            Button(role: .destructive) { model.forgetWord(it.0) } label: { Label("지우기", systemImage: "trash").labelStyle(.iconOnly) }
+                                .buttonStyle(.borderless)
+                                .padding(.leading, 12)
+                        }
                     }
                 }
             }

@@ -66,8 +66,10 @@ final class VoiceEar {
     /// 0.10.4 까지: 4분 동안 한 인식 묶음에 말을 계속 이어 붙이고 '몇 번째 낱말까지 넘겼는지'만 셌음 →
     /// ① 말하는 도중의 부분 결과('엎')를 낱말로 넘겨 버리고 ② 같은 말을 되풀이하거나 인식기가 앞의 글자를 고쳐 쓰면
     /// 낱말 수가 늘지 않아 그 뒤의 말을 하나도 넘기지 못했음 ('엎'·'자' 한 번 뒤로 아무것도 안 나온 까닭)
+    /// 0.10.10: 0.9초는 인식기가 '앉자'를 '안'까지만 적고 잠시 멈춘 사이에 끝난 것으로 쳐 '안'만 넘기고, 이어진 '자'는
+    /// 새 묶음에서 따로 넘겨 한 글자 말을 자주 배웠음 → 1.3초, 글자가 한 자뿐이면 2초까지 기다림
     func tick(now: Double) {
-        guard running, !text.isEmpty, now - changedAt > 0.9 else { return }
+        guard running, !text.isEmpty, now - changedAt > (text.count <= 1 ? 2.0 : 1.3) else { return }
         emit(text)
         text = ""
         worker.restart()
@@ -76,12 +78,46 @@ final class VoiceEar {
     /// 알아듣기 쉽게 인식기에 미리 알려 줄 말 (재주 말·이름·배운 말)
     func hint(_ words: [String]) { worker.setHints(words) }
 
+    /// 강아지 이름 (소문자·띄어쓰기 없앰) — 한 번 말한 것을 낱말로 나눌 때 이름은 따로 떼어 냄
+    var name = ""
+
     private func emit(_ t: String) {
-        for w in VoiceEar.words(t) {
+        for w in VoiceEar.utterance(t, name: name) {
             onWord?(w)
             VoiceEar.recent.insert(w, at: 0)
             if VoiceEar.recent.count > 8 { VoiceEar.recent.removeLast() }
         }
+    }
+
+    /// 한 글자로도 쓰는 재주 말 (그 밖의 한 글자는 말 조각으로 보고 넘기지 않음)
+    static let single: Set<String> = ["손", "빵", "코", "서", "앉", "와"]
+
+    /// 한 번 말한 것 → 넘길 낱말들 (0.10.10):
+    /// ① 두 글자 이상 낱말은 그대로 (지금까지 배운 말 그대로 알아들음)
+    /// ② 한 글자 조각('안'·'자')은 버리고, 여러 낱말이 짧으면(이름 빼고 6자 이하) 붙인 말('안 자' → '안자')도 넘김
+    /// ③ 같은 말 되풀이('엎드려 엎드려')는 한 번으로
+    static func utterance(_ t: String, name: String) -> [String] {
+        var ws = words(t)
+        var out: [String] = []
+        if !name.isEmpty, let i = ws.firstIndex(where: { $0.contains(name) }) { out.append(ws.remove(at: i)) }
+        for w in ws where w.count >= 2 || single.contains(w) {
+            let u = unrepeat(w)
+            if !out.contains(u) { out.append(u) }
+        }
+        let joined = unrepeat(ws.joined())
+        if ws.count > 1, joined.count <= 6, !out.contains(joined) { out.append(joined) }
+        return out
+    }
+
+    /// 같은 말을 붙여 되풀이한 것 → 한 번 ('엎드려엎드려' → '엎드려')
+    static func unrepeat(_ w: String) -> String {
+        let c = Array(w)
+        guard c.count >= 2 else { return w }
+        for u in 1...(c.count / 2) where c.count % u == 0 {
+            let unit = c[0..<u]
+            if stride(from: 0, to: c.count, by: u).allSatisfy({ c[$0..<($0 + u)] == unit }) { return String(unit) }
+        }
+        return w
     }
 
     /// 낱말로 자르고 다듬음: 소문자, 문장부호·띄어쓰기 없앰

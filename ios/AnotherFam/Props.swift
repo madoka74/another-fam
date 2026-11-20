@@ -301,8 +301,21 @@ final class Prop {
             r = 0.1; mass = 0.5; bounce = 0.05
         case "bag":
             // 배변 봉투 한 장 (초록 비닐, 손잡이 두 개)
-            add(Geo.lathe([(0, -0.045), (0.02, -0.044), (0.032, -0.02), (0.034, 0.02), (0.028, 0.04), (0, 0.042)], seg: 14), Geo.mat(SIMD3<Float>(0.35, 0.62, 0.38), rough: 0.35))
-            for sx: Float in [-1, 1] { add(.generateBox(width: 0.008, height: 0.03, depth: 0.004, cornerRadius: 0.002), Geo.mat(SIMD3<Float>(0.35, 0.62, 0.38), rough: 0.35), at: SIMD3<Float>(sx * 0.018, 0.055, 0)) }
+            // 0.10.10: 위가 닫힌 통 모양이라 플러그처럼 보였음 → 위가 열린 얇은 반투명 비닐 봉투(구김 주름) + 양쪽 손잡이 고리
+            var pm = PhysicallyBasedMaterial()
+            pm.baseColor = .init(tint: UIColor(red: 0.30, green: 0.64, blue: 0.36, alpha: 1))
+            pm.roughness = .init(floatLiteral: 0.3)
+            pm.clearcoat = .init(scale: 0.6)
+            pm.blending = .transparent(opacity: .init(floatLiteral: 0.72))
+            pm.faceCulling = .none                                   // 열린 봉투 안쪽도 보이게
+            add(Geo.lathe([(0, -0.05), (0.022, -0.049), (0.034, -0.04), (0.039, -0.026), (0.036, -0.016), (0.040, -0.004),
+                           (0.037, 0.008), (0.041, 0.02), (0.038, 0.031), (0.043, 0.043), (0.041, 0.047)], seg: 28), pm)
+            for sx: Float in [-1, 1] {
+                for k in 0..<11 {
+                    let a = (-40 + Float(k) * 26) * .pi / 180          // 고리: 봉투 입구 양쪽에서 위로 둥글게
+                    add(.generateSphere(radius: 0.0035), pm, at: SIMD3<Float>(sx * (0.026 + 0.016 * cos(a)), 0.062 + 0.018 * sin(a), 0))
+                }
+            }
             r = 0.06; mass = 0.01; bounce = 0
         case "poop":
             // 굽은 통나무 모양 세 마디 (윤기 있는 짙은 갈색)
