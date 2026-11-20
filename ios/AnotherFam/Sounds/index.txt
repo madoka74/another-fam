@@ -100,7 +100,6 @@ thump2
 thump3
 whimper1
 whimper2
-whimper3
 whimper_pup1
 whimper_pup2
 whine1
@@ -124,6 +123,3 @@ yawn2
 yip1
 yip2
 yip3
-yip4
-yip5
-yip6

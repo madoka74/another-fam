@@ -164,6 +164,8 @@ final class Dog {
     }
 
     private func fx(_ base: String, gain: Double) {
+        // 킁킁은 어디서 불러도 4초에 한 번까지 (여러 곳에서 겹쳐 울려 잡음처럼 들렸음)
+        if base == "sniff" { guard s.now > fxGap["sniffAny", default: 0] else { return }; fxGap["sniffAny"] = s.now + 4 }
         let bank = SoundBank.shared
         let name = stage == .senior && bank.has(base + "_old") ? base + "_old" : base
         bank.play(name, on: mouth, gain: gain, speed: Double.random(in: 0.97...1.03))
@@ -190,16 +192,16 @@ final class Dog {
         case .greet, .come: say(age < 56 ? "yip" : "woof", gain: -14, head: "bark")
         case .petted, .held: return
         default:
+            // 혼잣소리는 '강아지 목소리' 위주로 (0.10.9): 0.10.8 까지 킁킁·숨·머리 털기 같은 효과음이 절반 넘게 차지해
+            // 무슨 소리인지 알 수 없었음. 곁에 있으면 반가운 짧은 소리·관심 끄는 가는 소리, 졸리면 하품, 누워 있으면 한숨
             let near = simd_distance(pos, s.userPos) < 2.2
-            switch Int.random(in: 0..<7) {
-            case 0: fx("sniff", gain: -20); anim.overlay("sniff_air")
-            case 1: fx("sigh", gain: -20)
-            case 2: if p.energy < 0.6 { say("yawn", gain: -18, head: "yawn") } else { fx("sniff", gain: -22) }
-            case 3: if near && p.mood > 0.45 { say(age < 56 ? "yip" : "woof", gain: -16, head: "bark") } else { fx("sigh", gain: -22) }
-            case 4: if near { say("whimper", gain: -22) }      // 곁에 와 달라는 가는 소리
-            case 5: if p.energy > 0.4 && stage != .senior { fx("pant", gain: -26) } else { fx("sigh", gain: -22) }
-            default: if anim.posture == "stand" || anim.posture == "sit" { fx("shake", gain: -26); anim.overlay("shake_head") } else { fx("sigh", gain: -22) }
-            }
+            let lying = anim.posture == "down" || anim.posture == "rest" || anim.posture == "side" || anim.posture == "curl"
+            let r = Float.random(in: 0...1)
+            if near && p.mood > 0.45 && r < 0.4 { say(age < 56 ? "yip" : "woof", gain: -16, head: "bark") }
+            else if near && r < 0.7 { say(p.love < 0.5 ? "whine" : "whimper", gain: -20, head: p.love < 0.5 ? "whine" : nil) }
+            else if p.energy < 0.5 && !lying { say("yawn", gain: -18, head: "yawn") }
+            else if lying { fx("sigh", gain: -20) }
+            else if r < 0.85 { say(age < 56 ? "yip" : "woof", gain: -18, head: "bark") }
         }
     }
 
@@ -229,7 +231,9 @@ final class Dog {
     }
 
     /// target 으로 감. 반환: 0 가는 중, 1 닿음, -1 못 감
-    private func travel(_ dt: Float, to t: SIMD2<Float>, reach: Float, fast: Int) -> Int {
+    private func travel(_ dt: Float, to t0: SIMD2<Float>, reach: Float, fast: Int) -> Int {
+        // 목표가 내 몸 안이면(손에 든 간식·줄·내민 손 등) 몸 바깥 가장 가까운 곳으로 (0.10.9)
+        let t = outsideUser(t0)
         let d = simd_distance(xz, t)
         if d <= reach { stopMoving(); return 1 }
         if onPerch != nil { return -1 }
@@ -279,7 +283,11 @@ final class Dog {
         let step: Float = min(dw, v * dt * align)
         let dir = SIMD2<Float>(sin(yaw), cos(yaw))
         let np = xz + dir * step
-        if nav.open || nav.walkable(np.x, np.y) || !nav.walkable(pos.x, pos.z) {
+        if intoUser(np) {
+            // 내 몸 안으로 들어가는 걸음은 하지 않음 (바깥에서 멈춤)
+            stopMoving(); path.removeAll()
+            return simd_distance(xz, t) < reach + 0.35 ? 1 : 0
+        } else if nav.open || nav.walkable(np.x, np.y) || !nav.walkable(pos.x, pos.z) {
             pos.x = np.x; pos.z = np.y
             stuckN = 0
         } else if step > 0, nav.walkable(xz.x + dir.x * step, xz.y), abs(dv.x) > 0.01 {
@@ -390,6 +398,38 @@ final class Dog {
         }
     }
 
+    /// 내 몸이 차지한 바닥 (0.10.9): 서 있으면 발 둘레 17cm, 앉아 있으면 엉덩이 둘레 + 무릎·발.
+    /// 반지름에 강아지 몸 반 길이(가슴·엉덩이가 들어오지 않게)를 더함
+    private func userZone() -> [(SIMD2<Float>, Float)] {
+        guard let fy = s.room.floorY, !s.userPos.x.isNaN else { return [] }
+        let u = SIMD2<Float>(s.userPos.x, s.userPos.z), f = SIMD2<Float>(s.userFwd.x, s.userFwd.z)
+        let m = 0.15 * g
+        if s.userPos.y - fy < 1.25 { return [(u, 0.2 + m), (u + f * 0.25, 0.13 + m), (u + f * 0.42, 0.11 + m)] }
+        return [(u, 0.17 + m)]
+    }
+    /// 이 자리로 옮기면 내 몸에 더 깊이 들어가는지 (지금보다 깊어질 때만 참 — 이미 겹친 강아지가 밖으로 나가는 걸음은 막지 않음)
+    private func intoUser(_ q: SIMD2<Float>) -> Bool {
+        for (c, r) in userZone() {
+            let dn = simd_distance(q, c)
+            if dn < r && dn < simd_distance(xz, c) - 1e-4 { return true }
+        }
+        return false
+    }
+    /// 목표가 내 몸 안이면 몸 바깥 가장 가까운 곳 (강아지가 있는 쪽으로)
+    private func outsideUser(_ t: SIMD2<Float>) -> SIMD2<Float> {
+        var q = t
+        for _ in 0..<2 {
+            for (c, r) in userZone() {
+                let d = q - c, dl = simd_length(d)
+                if dl < r {
+                    let side = dl > 1e-3 ? d / dl : (simd_length(xz - c) > 1e-3 ? simd_normalize(xz - c) : SIMD2<Float>(1, 0))
+                    q = c + side * (r + 0.01)
+                }
+            }
+        }
+        return q
+    }
+
     /// 내가 선 채로 팸이 있는 자리에 1초 넘게 머물면 팸이 '걸어서' 비켜남 (0.10.8).
     /// 0.10.7 은 내 몸 둘레에 들어온 팸을 걸음 없이 밀어내서, 다가가거나 손을 뻗기만 해도(머리가 앞으로 나가면)
     /// 발도 안 움직이고 스케이트 타듯 미끄러져 멀어졌음 → 밀어내기를 없애고, 손을 뻗는 중·앉아 있을 때·만지는 중엔 그대로 둠
@@ -447,6 +487,7 @@ final class Dog {
         anim.speak(env, rate: 1)
     }
     private var squeakQ: [Double] = []
+    private var fxGap: [String: Double] = [:]          // 같은 효과음 사이 최소 간격
     private var nextSqueak: Double = 0
     private var ballNudges = 0
 
@@ -578,7 +619,7 @@ final class Dog {
         let headC: SIMD3<Float> = skin.T[J.head] + skin.R[J.head] * SIMD3<Float>(0, 0.02, 0.03)
         let a = skin.T[J.root], b = skin.T[J.chest]
         for h in s.room.hands where h.seen {
-            for pt in [h.palm, h.index] {
+            for pt in [h.palm, h.index, h.middle, h.thumb] {          // 쓰다듬을 땐 가운뎃손가락·엄지가 먼저 닿기도 함 (0.10.9)
                 let l = entity.convert(position: pt, from: nil)
                 let dh = simd_distance(l, headC)
                 let ab = b - a
@@ -730,14 +771,19 @@ final class Dog {
         body.orientation = simd_length(ax) > 1e-4 ? simd_quatf(from: SIMD3<Float>(0, 0, 1), to: simd_normalize(ax)) : Q.ry(0)
         // 동작 속 사건 → 소리
         for e in anim.events {
+            // 동작에 붙은 소리 (0.10.9): 실제로 귀에 들리는 것만 — 발소리(걸음마다 '틱' 소리)·눕는 '쿵'·귀 펄럭·앞발 톡은
+            // 무슨 소리인지 알 수 없는 잡음으로 가장 자주 났음 → 없앰. 핥기·씹기·킁킁은 간격을 둬 덜 잦게
             switch e {
-            case "step":
-                if g > 0.45 { fx(g < 0.7 ? "stepsoft" : "step", gain: anim.current == "run" ? -24 : -30) }
             case "squeak": if carry?.base == "squeak" || target?.base == "squeak" { fx("squeak", gain: -8) }
             case "whimper": say("whimper", gain: -16)
             case "yawn": say("yawn", gain: -18)
-            case "sneeze": say("sneeze", gain: -12)
-            default: if SoundBank.shared.has(e) { fx(e, gain: e == "thump" ? -16 : -20) }
+            case "sneeze": say("sneeze", gain: -14)
+            case "lap", "suck": fx(e, gain: -20)
+            case "shake", "scratch": fx(e, gain: -24)
+            case "lick": if s.now > fxGap["lick", default: 0] { fxGap["lick"] = s.now + 0.5; fx("lick", gain: -22) }
+            case "chew", "chomp": if s.now > fxGap["chew", default: 0] { fxGap["chew"] = s.now + 0.35; fx(e, gain: -22) }
+            case "sniff": if s.now > fxGap["sniff", default: 0] { fxGap["sniff"] = s.now + 4; fx("sniff", gain: -26) }
+            default: break
             }
         }
         // 삑삑이를 물고 있는 동안(들고 다니기·흔들기·당기기·물어 오기) 씹을 때마다 삑 (0.10.2 까지: 주울 때 한 번만 났음)
@@ -747,6 +793,8 @@ final class Dog {
             nextSqueak = s.now + Double.random(in: rough ? 0.5...1.4 : 1.0...3.0)
             squeakBurst(Int.random(in: 1...(rough ? 3 : 2)))
         }
+        // 헐떡이는 입 모양엔 헐떡임 소리 (0.10.9: 입만 벌리고 소리가 없었음)
+        if anim.overlayName == "pant" && s.now > fxGap["pant", default: 0] { fxGap["pant"] = s.now + Double.random(in: 1.3...1.8); fx("pant", gain: -24) }
         while let t = squeakQ.first, s.now >= t { squeakQ.removeFirst(); fx("squeak", gain: -8 - Double.random(in: 0...5)) }
         // 물고 있는 것: 입에 물린 채 고개를 따라 기울고 돎 (길쭉한 것은 가로로 묾, 인형은 옆으로 늘어뜨림)
         if let c = carry {
@@ -943,7 +991,7 @@ final class Dog {
             if pos.y <= landY {
                 let hard = vy < -1.6
                 pos.y = landY
-                fx("thump", gain: hard ? -10 : -20)
+                fx("thump", gain: hard ? -16 : -26)
                 if landY > fy + 0.12 { landUp(landY) } else { begin(.idle, for: 1.5) }
                 if hard { anim.play(g < 0.7 ? "plop" : "startle"); say(baby ? "mewl" : "yip", gain: -10); pet.love = max(0, pet.love - 0.05) }
             }
@@ -1081,7 +1129,7 @@ final class Dog {
         case 6: anim.setPosture("sit"); anim.play(Bool.random() ? "scratch_l" : "scratch_r", then: "sit")
         case 7: anim.overlay("yawn")
         case 8: anim.overlay(Bool.random() ? "look_l" : "look_r")
-        case 9: anim.overlay("sniff_air"); fx("sniff", gain: -22)
+        case 9: anim.overlay("sniff_air")
         case 10: if anim.posture == "stand" { anim.play("sniff_ground", then: "stand") }
         case 11: anim.setPosture("down"); anim.hold("lick_paw"); until = s.now + 6; holdStopAt = s.now + 5.8
         case 12: if young && anim.posture == "stand" { anim.play(Bool.random() ? "spin_l" : "spin_r", then: "stand"); until = s.now + 2.7 }
@@ -1091,12 +1139,12 @@ final class Dog {
         case 16: anim.overlay("tilt_lr")
         case 17: if anim.posture == "stand" { anim.play("look_back", then: "stand") }
         case 18: anim.overlay("sneeze")
-        case 19: if anim.posture == "sit" { anim.play("shake_sit", then: "sit") } else { anim.overlay("shake_head"); fx("shake", gain: -24) }
+        case 19: if anim.posture == "sit" { anim.play("shake_sit", then: "sit") } else { anim.overlay("shake_head") }
         case 20: if anim.posture == "sit" { anim.play(Bool.random() ? "scratch_l" : "scratch_r", then: "sit") } else { anim.overlay("ear_perk") }
         case 21: if stage != .senior { anim.setPosture("side"); anim.play("side_stretch", then: "side"); until = s.now + 5 }
         case 22: anim.overlay("look_down")
         case 23: if p.energy < 0.5 { anim.overlay("sleepy") } else { anim.overlay("tilt_l") }
-        case 24: anim.overlay("sniff_air"); fx("sniff", gain: -22)
+        case 24: anim.overlay("sniff_air")
         case 25: if anim.posture == "stand" { anim.play("shake") } else { anim.overlay("ear_back") }
         case 26: if young && anim.posture == "stand" { anim.play("pounce", then: "stand"); say("yip", gain: -16) }
         case 27: anim.overlay("nod")
@@ -1469,7 +1517,7 @@ final class Dog {
             if carry == nil { if s.now > until { begin(.idle, for: 1) }; return }       // 아직 무는 중
             if shakeIt {
                 if !anim.busy { anim.hold("shake_toy") }
-                if t.base == "rope" && s.now > nextVoice { nextVoice = s.now + Double.random(in: 1.2...2.6); say(age < 90 ? "growl_play_pup" : "growl_play", gain: -18) }
+
             } else if !anim.busy { _ = travel(dt, to: spot, reach: 0.15, fast: 1) }
             pet.fun = min(1, pet.fun + 0.01 * dt)
             if s.now > until { anim.stop(); putDown(); phase = 6; until = s.now + 0.8 }
@@ -1519,7 +1567,7 @@ final class Dog {
             // 줄 끝 아래로 와서 묾
             let r = travel(dt, to: SIMD2<Float>(t.pos.x, t.pos.z) - SIMD2<Float>(sin(yaw), cos(yaw)) * 0.0, reach: 0.22 * g + 0.06, fast: 1)
             if r == -1 { begin(.idle, for: 1); return }
-            if r == 1 && t.pos.y - pos.y < 0.32 * g + 0.12 { phase = 1; anim.hold("tug"); say("growl_play", gain: -14, head: "growl") }
+            if r == 1 && t.pos.y - pos.y < 0.32 * g + 0.12 { phase = 1; anim.hold("tug"); nextVoice = s.now + Double.random(in: 3...8) }
             else if r == 1 && !anim.busy { anim.play("hop", then: "stand") }
         default:
             _ = face(t.pos, dt, rate: 5)
@@ -1527,11 +1575,15 @@ final class Dog {
             let d = SIMD2<Float>(t.pos.x - pos.x, t.pos.z - pos.z)
             let l = simd_length(d)
             let want: Float = 0.15 * g + 0.05
-            if l > want + 0.03 { let m: SIMD2<Float> = d / l * min(l - want, 1.2 * dt); pos.x += m.x; pos.z += m.y }
+            if l > want + 0.03 {
+                let m: SIMD2<Float> = d / l * min(l - want, 1.2 * dt)
+                if !intoUser(xz + m) { pos.x += m.x; pos.z += m.y }        // 줄을 몸 쪽으로 당겨도 내 몸 안으로는 끌려오지 않음
+            }
             pet.fun = min(1, pet.fun + 0.03 * dt)
             pet.energy = max(0, pet.energy - 0.004 * dt)
             pet.bond = min(1, pet.bond + 0.0006 * dt)
-            if s.now > nextVoice { nextVoice = s.now + Double.random(in: 2.5...6); say("growl_play", gain: -14, head: "growl") }
+            // 당기기 중 장난 으르렁은 가끔만 (0.10.9: 2.5~6초마다라 으르렁이 가장 자주 나는 소리였음)
+            if s.now > nextVoice { nextVoice = s.now + Double.random(in: 7...14); if Bool.random() { say("growl_play", gain: -18, head: "growl") } }
             if t.pos.y - pos.y > 0.5 * g + 0.2 { anim.stop(); begin(.idle, for: 1) }
         }
     }
@@ -1619,7 +1671,7 @@ final class Dog {
             // 끝나는 모습도 여러 가지: 몸 털기·기지개·손 쪽으로 더 비비기·더 해 달라고 앞발·그대로 쉬기
             let r = Float.random(in: 0...1)
             if was == "belly" || was == "side" { if r < 0.5 { anim.setPosture("down") } }
-            else if r < 0.22 && was == standName { anim.play("shake", then: standName); fx("shake", gain: -16) }
+            else if r < 0.22 && was == standName { anim.play("shake", then: standName) }
             else if r < 0.36 && was == standName { anim.play("stretch_front", then: standName) }
             else if r < 0.5 && p.bond > 0.3 && (was == "sit" || was == standName) { anim.play("paw_at", then: standName) }
             else if r < 0.7 && p.love < 0.8 { anim.overlay("nuzzle") }
@@ -1913,7 +1965,7 @@ final class Dog {
             let arc: Float = 0.08 * sin(.pi * u)
             pos = fromP + (toP - fromP) * u
             pos.y = fromP.y + (toP.y - fromP.y) * Q.ss(u) + arc
-            if actT > 0.9 { onPerch = pc; phase = 4; fx("thump", gain: -18); anim.setPosture(["rest", "curl", "sit", "sploot"].randomElement() ?? "rest"); until = s.now + Double.random(in: 30...120) }
+            if actT > 0.9 { onPerch = pc; phase = 4; fx("thump", gain: -26); anim.setPosture(["rest", "curl", "sit", "sploot"].randomElement() ?? "rest"); until = s.now + Double.random(in: 30...120) }
         case 4:
             if s.now > until || pet.potty < 0.25 || (pet.food < 0.3 && s.prop("bowl_food")?.fill ?? 0 > 0.05) {
                 anim.setPosture("stand"); phase = 5
@@ -1939,7 +1991,7 @@ final class Dog {
             let u = min(1, max(0, (actT - 0.25) / 0.4))
             pos = fromP + (toP - fromP) * u
             pos.y = fromP.y + (toP.y - fromP.y) * (u * u)
-            if actT > 1.0 { fx("thump", gain: -16); perchGoal = nil; begin(.idle, for: 1) }
+            if actT > 1.0 { fx("thump", gain: -24); perchGoal = nil; begin(.idle, for: 1) }
         }
     }
     private var fromP = SIMD3<Float>(0, 0, 0), toP = SIMD3<Float>(0, 0, 0)

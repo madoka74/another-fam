@@ -686,11 +686,14 @@ final class PlaySession {
         // 시스템은 손가락이 강아지 몸에 닿았다 떨어지는 것도 탭으로 보내서, 쓰다듬는 동안 카드가 자꾸 떴음.
         // 집기 탭은 탭 직전 0.5초 안에 엄지·검지가 모여 있음 — 손 위치는 상관없어 가까이 있어도 카드가 뜸.
         // 다만 강아지 털을 직접 집은 것(집은 자리가 탭 자리)은 쓰다듬기로 봄
+        // 0.10.9: 쓰다듬는 손은 손가락이 오므려져 엄지·검지가 붙는 때가 많아 '집기'로 잘못 읽혀 0.10.7 의 거르기를 통과했음 →
+        // 손가락·손바닥이 강아지 몸에 닿아 있거나 막 떨어진 뒤(1초)엔 탭을 받지 않음. 손이 몸에 닿지 않은 채 바라보고 집으면
+        // 손이 강아지 바로 옆에 있어도 카드가 뜸 (0.9 처럼 '손이 30cm 안이면 무시'가 아님)
+        if d.touching || now - d.lastTouchAt < 1.0 { return }
         if now - handSeenAt < 1.0 {
             guard now - pinchAt < 0.5 else { return }
             if let w, simd_distance(pinchGrip, w) < 0.05 { return }
-        } else if let w { if touchedDirectly(w) { return } }
-        else if d.touching || now - d.lastTouchAt < 1.5 { return }
+        } else if let w, touchedDirectly(w) { return }
         if !cardOn && AppModel.shared.mainOpen { AppModel.shared.closeMain?() }     // 메뉴는 늘 하나만
         cardOn.toggle()
         cardUntil = now + 15
