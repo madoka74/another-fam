@@ -35,10 +35,16 @@ struct AnotherFamApp: App {
 final class AppModel {
     static let shared = AppModel()
 
-    var pet: PetState? = Store.load()
+    /// 우리 집 팸들 (0.10.15). pet = 지금 고른(공간에 나와 함께하는) 팸 — 보관함·상점·설정은 이 팸 것
+    var family: Family = Store.load()
+    var pet: PetState? {
+        get { family.current }
+        set { if let p = newValue { family.put(p) } }
+    }
     var playOpen = false
     var notice: String?
-    var tab = 0                          // 메인 창 탭 (0 홈, 1 보관함, 2 상점, 3 설정)
+    var tab = 0                          // 메인 메뉴 탭 (4 보금자리, 0 홈, 1 보관함, 2 상점, 3 설정)
+    var menuSel: String?                 // 홈에서 살펴보는 팸 (함께하는 중에 다른 팸을 골랐을 때)
     @ObservationIgnored var mainOpen = false
     @ObservationIgnored var openMain: (@MainActor () -> Void)?
     @ObservationIgnored var closeMain: (@MainActor () -> Void)?
@@ -61,34 +67,79 @@ final class AppModel {
         }
     }
 
-    /// 앱으로 돌아옴: 그동안 흐른 시간을 따라잡음
+    /// 앱으로 돌아옴: 그동안 흐른 시간을 따라잡음 — 공간에 나와 있지 않은 팸들 모두 (공간의 팸은 공간이 셈)
     func wake() {
-        if let s = session {
+        if let s = session, !s.pet.together {
             // 다시 앞으로: 함께 있다는 표시를 다시 올림
-            if !s.pet.together { s.pet.together = true; Store.save(s.pet, force: true) }
-            return
+            s.pet.together = true
+            Store.save(s.pet, force: true)
         }
-        guard var p = pet else { return }
-        p.catchUp()
-        pet = p
-        Store.save(p)
+        guard !family.pets.isEmpty else { return }
+        var f = family
+        for i in f.pets.indices where f.pets[i].id != session?.pet.id {
+            f.pets[i].catchUp()
+            f.pets[i].together = false
+        }
+        family = f
+        Store.save(family: f)
+        if let s = session { family.put(s.pet) }
     }
 
     /// 앱이 뒤로 감(기기를 벗거나 다른 앱으로): 함께 있다는 표시를 내리고 바로 올림 → 아이폰이 그때부터 다시 알림을 맡음
     func sleep() {
-        if let s = session { s.pet.together = false; s.pet.lastSim = Date().timeIntervalSince1970; Store.saveFinal(s.pet) }
-        else if var p = pet { p.together = false; pet = p; Store.saveFinal(p) }
+        if let s = session { s.pet.together = false; s.pet.lastSim = Date().timeIntervalSince1970; Store.saveFinal(s.pet); family.put(s.pet) }
+        else if !family.pets.isEmpty {
+            var f = family
+            for i in f.pets.indices { f.pets[i].together = false }
+            family = f
+            Store.saveFinal(family: f)
+        }
     }
 
-    func adopt(name: String, male: Bool) {
+    /// 보금자리에서 입양. 함께하는 팸이 없으면 새 팸을 바로 고름 (있으면 홈에서 바꿔 함께할 수 있음)
+    func adopt(_ breed: Breed, name: String, male: Bool) {
         var p = PetState()
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        p.species = breed.id
         p.name = n.isEmpty ? "몽이" : String(n.prefix(12))
         p.male = male
         p.born = Date().timeIntervalSince1970
         p.lastSim = p.born
-        pet = p
-        Store.save(p)
+        var f = family
+        f.put(p)
+        if session == nil || f.active.isEmpty { f.active = p.id }
+        family = f
+        Store.save(family: f)
+        menuSel = p.id
+        tab = 0
+        notice = session == nil ? "\(p.name)\(Josa.wa(p.name)) 가족이 되었어요" : "\(p.name)\(Josa.wa(p.name)) 가족이 되었어요 · 홈에서 골라 함께할 수 있어요"
+    }
+
+    /// 홈에서 함께할 팸을 고름 (공간이 닫혀 있을 때)
+    func select(_ id: String) {
+        menuSel = id
+        guard session == nil, !playOpen, family.active != id, family.pet(id) != nil else { return }
+        var f = family
+        f.active = id
+        family = f
+        Store.save(family: f)
+    }
+
+    /// 함께하는 중에 다른 팸으로: 지금 팸은 쉬러 가고(공간을 닫음) 고른 팸과 다시 함께함
+    func switchPlay(to id: String) {
+        guard family.pet(id) != nil, !busy else { return }
+        Task {
+            if playOpen, let closeAction { await closeAction() }
+            playOpen = false
+            AppModel.nearWindow = false
+            var f = family
+            f.active = id
+            family = f
+            Store.save(family: f)
+            menuSel = id
+            try? await Task.sleep(nanoseconds: 1_000_000_000)        // 공간이 다 닫히고 메인 창이 다시 뜬 뒤에 엶
+            play()
+        }
     }
 
     /// 시험: '함께한 날'을 정함 (입양한 때를 그만큼 앞당김). 그 뒤로는 그 나이에서 시간이 그대로 흐름
@@ -106,11 +157,17 @@ final class AppModel {
         session?.dog?.ageChanged()
     }
 
+    /// 지금 고른 팸과 헤어짐 (설정 › 가족). 다른 팸들은 그대로. 마지막 팸이면 집 자리도 지움
     func reset() {
-        guard session == nil else { return }
-        Store.clear()
-        UserDefaults.standard.removeObject(forKey: "af.home")
-        pet = nil
+        guard session == nil, let p = pet else { return }
+        var f = family
+        f.pets.removeAll { $0.id == p.id }
+        f.active = f.pets.first?.id ?? ""
+        family = f
+        Store.save(family: f)
+        UserDefaults.standard.removeObject(forKey: "af.anchors." + p.id)
+        if f.pets.isEmpty { UserDefaults.standard.removeObject(forKey: "af.home"); tab = 4 }
+        menuSel = nil
     }
 
     // MARK: 상점·보관함
@@ -155,6 +212,7 @@ final class AppModel {
     // MARK: 함께하는 공간
     func play() {
         guard !playOpen, !busy, pet != nil else { return }
+        if let id = menuSel, id != family.active, family.pet(id) != nil { select(id) }
         busy = true
         Task {
             let ok = await openAction?() ?? false
@@ -176,10 +234,12 @@ final class AppModel {
 
     func playClosed() { playOpen = false; AppModel.nearWindow = false }
 
-    /// 메인 메뉴(하나뿐인 메뉴)를 그 탭으로 엶. 뜨면 팸 카드는 바로 닫힘
+    /// 메인 메뉴(하나뿐인 메뉴)를 그 탭으로 엶. 뜨면 팸 카드는 바로 닫힘.
+    /// 0.10.15: 함께하는 동안은 창(시스템이 곁에 낮고 기울게 둠) 대신 공간 안 메뉴판 — 팸 카드가 뜨던 자리에 같은 방식으로
     func showMain(tab t: Int, note: String? = nil) {
         if let note { notice = note }
         tab = t
+        if let s = session, !mainOpen { s.openMenu(); return }
         session?.closeCard()
         if !mainOpen { openMain?() }
     }

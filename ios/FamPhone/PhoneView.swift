@@ -16,6 +16,7 @@ struct PhoneView: View {
             ScrollView {
                 VStack(spacing: 14) {
                     if let p = m.pet {
+                        if m.pets.count > 1 { petRow(p.id) }
                         stageCard(p)
                         needsCard(p)
                         alertsCard
@@ -47,6 +48,33 @@ struct PhoneView: View {
         }
         .onChange(of: m.pet) { _, p in
             if let p { stage.show(p, m.doing) }
+        }
+    }
+
+    // MARK: 우리 집 팸들 (0.10.15): 둘 이상이면 위에 이름 줄 — 누르면 그 팸을 봄 (알림은 모든 팸 것)
+    private func petRow(_ sel: String) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(m.pets, id: \.id) { q in
+                    let on = q.id == sel
+                    Button {
+                        m.sel = q.id
+                        info = nil
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: Breeds.of(q.species).icon).font(.footnote)
+                            Text(q.name).font(.subheadline.weight(.semibold))
+                            if m.togetherNow(q) { Image(systemName: "visionpro").font(.caption2) }
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(.white.opacity(on ? 0.22 : 0.07), in: Capsule())
+                        .overlay(Capsule().stroke(.white.opacity(on ? 0.5 : 0), lineWidth: 1.2))
+                        .foregroundStyle(on ? Color.primary : Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 2)
         }
     }
 

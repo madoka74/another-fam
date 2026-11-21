@@ -46,7 +46,10 @@ struct PlannedAlert: Identifiable {
     var at: Double
     let text: String
     var n = 0
-    var id: String { "\(kind)\(at)" }
+    var pet = ""                         // 어느 팸의 알림인지 (0.10.15 여러 팸)
+    var name = ""
+    var id: String { "\(pet)\(kind)\(at)" }
+    var key: String { pet + "|" + kind }
 }
 
 @MainActor @Observable
@@ -59,8 +62,14 @@ final class PhoneModel {
         set { UserDefaults.standard.set(newValue, forKey: "af.ckpet") }
     }
 
-    var pet: PetState?                  // 지금 시각까지 따라잡은 상태
-    var seenAt: Double = 0              // 비전 앱이 마지막으로 저장한 때
+    /// 우리 집 팸들 (지금 시각까지 따라잡은 상태). 화면에는 고른 팸 하나 — 알림은 모든 팸 것 (0.10.15)
+    var pets: [PetState] = []
+    var sel: String = UserDefaults.standard.string(forKey: "af.sel") ?? "" {
+        didSet { UserDefaults.standard.set(sel, forKey: "af.sel") }
+    }
+    var pet: PetState? { pets.first { $0.id == sel } ?? pets.first }
+    private var seen: [String: Double] = [:]          // 팸마다 비전 앱이 마지막으로 셈한 때
+    var seenAt: Double { pet.map { seen[$0.id] ?? 0 } ?? 0 }
     var upcoming: [PlannedAlert] = []
     var allowed: Bool?
     var night: Bool = UserDefaults.standard.bool(forKey: "af.night") {
@@ -71,8 +80,9 @@ final class PhoneModel {
     /// 비전에서 함께하는 중인지: 비전 앱이 올린 '함께 있음' 표시 + 그 소식이 너무 오래되지 않았을 때 (20분마다 다시 옴)
     var together: Bool {
         guard let p = pet else { return false }
-        return p.together && Date().timeIntervalSince1970 - seenAt < 30 * 60
+        return togetherNow(p)
     }
+    func togetherNow(_ p: PetState) -> Bool { p.together && Date().timeIntervalSince1970 - (seen[p.id] ?? 0) < 30 * 60 }
     /// 화면을 새로 그리게 하는 시계 (열어 둔 동안 15초마다)
     var clock: Double = Date().timeIntervalSince1970
 
@@ -136,36 +146,53 @@ final class PhoneModel {
         center.removeAllPendingNotificationRequests()
         if let d = await CloudSync.pull() { PhoneModel.cloudData = d }      // 켤 때·깨어날 때 클라우드킷에서도 한 번
         let kv = CloudPet.pull()
-        let ck = PhoneModel.cloudData.flatMap { try? JSONDecoder().decode(PetState.self, from: $0) }
-        let fresh = [kv, ck].compactMap { $0 }.max { $0.lastSim < $1.lastSim }
-        guard let saved = fresh else {
-            pet = nil
+        let ck = PhoneModel.cloudData.flatMap { Family.decode($0) }
+        let newest = { (f: Family) in f.pets.map(\.lastSim).max() ?? 0 }
+        let fresh = [kv, ck].compactMap { $0 }.max { newest($0) < newest($1) }
+        guard let fam = fresh, !fam.pets.isEmpty else {
+            pets = []
             upcoming = []
             return
         }
-        seenAt = saved.lastSim
-        var now = saved
-        now.catchUp()
-        if saved.together { now.together = true }
-        pet = now
-        clock = Date().timeIntervalSince1970
-        // 비전에서 함께하는 동안은 폰 알림을 울리지 않음 (알릴 일은 비전 안에서). 비전 소식이 끊겨도 2시간 뒤부터는 다시 알림
-        // 방금 비전에서 나왔으면 30분은 쉬었다가 (나오자마자 폰이 울리지 않게)
-        let quiet = saved.together ? saved.lastSim + 2 * 3600 : (Date().timeIntervalSince1970 - saved.lastSim < 1800 ? saved.lastSim + 1800 : 0)
-        let plan = Forecast.plan(from: now, night: night, quietUntil: quiet)
-        upcoming = plan
-        guard allowed == true else { return }
+        var list: [PetState] = []
+        var plan: [PlannedAlert] = []
         let t0 = Date().timeIntervalSince1970
-        for (i, a) in plan.enumerated() {
+        for saved in fam.pets {
+            seen[saved.id] = saved.lastSim
+            var now = saved
+            now.catchUp()
+            if saved.together { now.together = true }
+            list.append(now)
+            // 비전에서 함께하는 동안은 그 팸의 폰 알림을 울리지 않음 (알릴 일은 비전 안에서). 비전 소식이 끊겨도 2시간 뒤부터는 다시 알림
+            // 방금 비전에서 나왔으면 30분은 쉬었다가 (나오자마자 폰이 울리지 않게)
+            let quiet = saved.together ? saved.lastSim + 2 * 3600 : (t0 - saved.lastSim < 1800 ? saved.lastSim + 1800 : 0)
+            plan += Forecast.plan(from: now, night: night, quietUntil: quiet).map { var a = $0; a.pet = saved.id; a.name = saved.name; return a }
+        }
+        pets = list
+        if !list.contains(where: { $0.id == sel }) { sel = fam.active.isEmpty ? list[0].id : fam.active }
+        clock = t0
+        // 여러 팸 알림을 한데 모아 때 순서로 (같은 때 몰리지 않게 10분 간격, iOS 예약 한도 64 안)
+        plan.sort { $0.at < $1.at }
+        var res: [PlannedAlert] = []
+        var lastAt = -1e9
+        for var a in plan {
+            if a.at - lastAt < 600 { a.at = lastAt + 600 }
+            lastAt = a.at
+            res.append(a)
+            if res.count >= 60 { break }
+        }
+        upcoming = res
+        guard allowed == true else { return }
+        for (i, a) in res.enumerated() {
             let c = UNMutableNotificationContent()
-            c.title = saved.name
+            c.title = a.name
             c.body = a.text
             c.sound = .default
-            c.threadIdentifier = "pet"
+            c.threadIdentifier = "pet." + a.pet
             let trig = UNTimeIntervalNotificationTrigger(timeInterval: max(5, a.at - t0), repeats: false)
-            try? await center.add(UNNotificationRequest(identifier: "af.\(a.kind).\(i)", content: c, trigger: trig))
+            try? await center.add(UNNotificationRequest(identifier: "af.\(a.pet).\(a.kind).\(i)", content: c, trigger: trig))
         }
-        Forecast.remember(plan)
+        Forecast.remember(res)
     }
 }
 
@@ -236,13 +263,19 @@ enum Forecast {
         sent = s
     }
 
+    /// 계획 기록: 종류 열쇠 = 팸|종류 (0.10.15 여러 팸 — 한 팸에 알린 것이 다른 팸 알림을 막지 않게)
     static func remember(_ plan: [PlannedAlert]) {
-        UserDefaults.standard.set(plan.map { ["k": $0.kind, "t": $0.at, "n": Double($0.n)] as [String: Any] }, forKey: "af.plan")
+        UserDefaults.standard.set(plan.map { ["k": $0.key, "t": $0.at, "n": Double($0.n)] as [String: Any] }, forKey: "af.plan")
     }
 
     static func plan(from cur: PetState, night: Bool, quietUntil: Double) -> [PlannedAlert] {
         let now = Date().timeIntervalSince1970
-        let prev = sent
+        // 0.10.14 까지 기록(팸 없이 종류만)은 그 팸 것으로 봄
+        var prev: [String: [Double]] = [:]
+        for (k, v) in sent {
+            if k.hasPrefix(cur.id + "|") { prev[String(k.dropFirst(cur.id.count + 1))] = v }
+            else if !k.contains("|") && prev[k] == nil { prev[k] = v }
+        }
         var out: [PlannedAlert] = []
         var state: [String: (on: Bool, last: Double, n: Int)] = [:]
         for k in kinds {

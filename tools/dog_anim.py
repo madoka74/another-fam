@@ -13,7 +13,7 @@ FPS = 30
 LEGS = ("FL", "FR", "HL", "HR")
 D = dict(dx=0., dy=0., dz=0., pitch=0., yaw=0., roll=0., sp=(0., 0., 0.), ch=(0., 0., 0.), nk=(0., 0., 0.), hd=(0., 0., 0.),
          jaw=0., ear=(0., 0.), tail=(0., 0.), FL=(0., 0., 0., 0.), FR=(0., 0., 0., 0.), HL=(0., 0., 0., 0.), HR=(0., 0., 0., 0.),
-         lid=0., tongue=0., wag=.3, sq=0.)
+         lid=0., tongue=0., wag=.3, sq=0., tailY=0.)
 
 
 def S(base=None, **kw):
@@ -44,6 +44,9 @@ def solve(s, pre=0.):
     q[IDX["earL"]] = qmul(rz(s["ear"][0]), rx(s["ear"][1])); q[IDX["earR"]] = qmul(rz(-s["ear"][0]), rx(s["ear"][1]))
     L, C = s["tail"]
     for n, a in (("tail1", L), ("tail2", C * .5), ("tail3", C * .3), ("tail4", C * .2)): q[IDX[n]] = rx(a)
+    # 꼬리를 옆으로 (0.10.15): 누워 잘 때 꼬리를 바닥에 몸 옆으로 내려놓게 — 전엔 위아래로만 굽어 자는 동안에도 꼬리가 공중에 서 있었음
+    if s["tailY"]:
+        q[IDX["tail1"]] = qmul(ry(s["tailY"]), q[IDX["tail1"]]); q[IDX["tail2"]] = qmul(ry(s["tailY"] * .4), q[IDX["tail2"]])
     pos = np.array([s["dx"], s["dy"] - pre, s["dz"]])
     for it in range(3):
         R, T, _ = fk(q, pos)
@@ -141,7 +144,9 @@ REST_ = S(DOWN, nk=(.42, 0, 0), hd=(.2, 0, 0), ear=(.15, 0), lid=.25, wag=0)
 SPLOOT = S(DOWN, dy=-.104, HL=('a', 1.45, .35, -.5, .9), HR=('a', 1.45, .35, -.5, .9), tail=(-.5, -.2))
 SIDE = S(dy=-.108, roll=1.42, dx=-.02, sp=(0, 0, 0), nk=(.1, 0, -.1), hd=(.1, 0, 0), tail=(-.9, -.5), wag=0,
          FL=('a', -.75, .12, .5, .3), FR=('a', -.55, -.22, .7, .3), HL=('a', -.55, .12, .5, -.2), HR=('a', -.35, -.22, .6, -.2))
-CURL = S(DOWN, dy=-.103, roll=.35, sp=(.1, .55, 0), ch=(.1, .45, 0), nk=(.45, .75, 0), hd=(.3, .5, .2), tail=(-.6, .3), lid=1, wag=0,
+# 0.10.15: 웅크려 자기 — 머리를 들어 허공에 둔 채, 꼬리는 공중에 세운 채 자서 어색했음 → 턱을 뒷다리 쪽 바닥에 내려놓고
+# 꼬리는 머리 쪽으로 몸에 붙여 바닥에 (도넛처럼 말린 모습)
+CURL = S(DOWN, dy=-.103, roll=.35, sp=(.1, .55, 0), ch=(.1, .45, 0), nk=(.8, .75, 0), hd=(.45, .5, .35), tail=(1.3, .3), tailY=-.9, lid=1, wag=0,
          HL=(.03, .014, .12, -1.3), HR=(.0, .014, .09, -1.3))
 # 배 보이기 (0.10.0): 완전히 뒤집혀 목을 세운 채 버티던 자세(0.9) → 등을 대고 한쪽으로 살짝 기운 채 몸을 C자로 휘고,
 # 머리는 옆얼굴을 바닥에 툭 내려놓고, 앞발은 가슴 위로 접고, 뒷다리는 벌려 무릎을 굽힘 (실제 강아지가 배를 내보이며 늘어진 모습)
@@ -502,7 +507,8 @@ hold("dream", S(SIDE, lid=1), 3.0, mod=lambda s, t: dict(s, FL=('a', -.75 + (.22
      HL=('a', -.55 + (.2 * np.sin(2 * np.pi * t / .22 + 2) if .8 < t < 1.7 else 0), .1, .5, -.2), jaw=(.07 if 1.0 < t < 1.2 or 1.4 < t < 1.55 else 0), ear=(.15 * (1 if 2.0 < t < 2.1 else 0), 0), lid=1 - (.12 if 1.1 < t < 1.6 else 0)), events=[(1.0, "whimper")], tag="sleep")
 seq("side_stretch", [(0, SIDE), (.8, S(SIDE, sp=(-.2, 0, 0), nk=(-.3, 0, -.1), FL=('a', -1.2, .1, .1, -.3), FR=('a', -1.0, .05, .1, -.3), HL=('a', .25, .1, .1, .5), HR=('a', .4, .05, .1, .5), jaw=.3, lid=1)), (.9, S(SIDE, sp=(-.22, 0, 0), nk=(-.35, 0, -.1), FL=('a', -1.25, .1, .05, -.3), FR=('a', -1.05, .05, .05, -.3), HL=('a', .3, .1, .05, .5), HR=('a', .45, .05, .05, .5), jaw=.45, lid=1)), (.7, SIDE)], tag="act")
 seq("wake", [(0, S(REST_, lid=1)), (.6, S(REST_, lid=.5)), (.6, S(DOWN, lid=.3, nk=(-.1, 0, 0))), (.5, S(DOWN, lid=0))], tag="sleep")
-hold("sleep_rest", S(REST_, lid=1, hd=(.2, 0, .15)), 4.0, tag="pose")
+# 0.10.15: 엎드려 자기 — 고개를 든 채(눈만 감고) 꼬리도 세운 채라 어색했음 → 턱을 앞발 위 바닥에 내려놓고 꼬리는 엉덩이 옆 바닥에
+hold("sleep_rest", S(REST_, lid=1, nk=(.62, 0, 0), hd=(.38, 0, .04), ear=(.05, 0), tail=(1.3, .3), tailY=.9), 4.0, tag="pose")
 hold("sleep_curl", CURL, 4.0, tag="pose")
 # 안겼을 때 버둥
 hold("held_wiggle", HELD, 1.2, mod=lambda s, t: dict(s, HL=('a', -.5 + .35 * np.sin(2 * np.pi * t / .4), .1, -.5, .2), HR=('a', -.4 + .35 * np.sin(2 * np.pi * t / .4 + np.pi), .1, -.6, .2), sp=(.15, .1 * np.sin(2 * np.pi * t / .6), 0), wag=.9), tag="held")

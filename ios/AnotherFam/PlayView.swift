@@ -11,9 +11,13 @@ struct PlayView: View {
         RealityView { content, attachments in
             content.add(s.root)
             if let c = attachments.entity(for: "card") { s.attachCard(c) }
+            if let m = attachments.entity(for: "menu") { s.attachMenu(m) }
+            if let t = attachments.entity(for: "toast") { s.attachToast(t) }
             s.updateSub = content.subscribe(to: SceneEvents.Update.self) { e in s.tick(Float(e.deltaTime)) }
         } attachments: {
             Attachment(id: "card") { StatusCard(s: s) }
+            Attachment(id: "menu") { MenuPanel(s: s) }
+            Attachment(id: "toast") { ToastView(s: s) }
         }
         // 강아지를 바라보고 집으면 상태 카드
         // 탭 자리를 함께 넘김: 손가락이 직접 닿은 탭(쓰다듬기)만 거르고, 바라보고 집은 탭은 가까이 있어도 받음 (0.10.0)
@@ -127,7 +131,21 @@ struct StatusCard: View {
                     CardButton(icon: "square.grid.2x2.fill", title: "메뉴") { AppModel.shared.showMain(tab: AppModel.shared.tab) }
                 }
             }
-            if let t = s.toastText { Text(t).font(.title3) }
+        }
+        .fixedSize()
+        .padding(.horizontal, 24).padding(.vertical, 20)
+        .glassBackgroundEffect()
+        .opacity(s.cardOn ? 1 : 0)
+    }
+}
+
+/// 안내 (0.10.15): 카드와 따로, 보는 쪽 정면 조금 아래에 뜸 (PlaySession.showToast)
+struct ToastView: View {
+    let s: PlaySession
+
+    var body: some View {
+        VStack(spacing: 14) {
+            if let t = s.toastText { Text(t).font(.title3.weight(.medium)).multilineTextAlignment(.center).frame(maxWidth: 620) }
             if s.loading {
                 HStack(spacing: 12) {
                     if s.canRehome { Button { s.rehome() } label: { Label("여기에 새로 자리 잡기", systemImage: "mappin.and.ellipse") } }
@@ -136,8 +154,8 @@ struct StatusCard: View {
             }
         }
         .fixedSize()
-        .padding(.horizontal, 24).padding(.vertical, 20)
+        .padding(.horizontal, 26).padding(.vertical, 16)
         .glassBackgroundEffect()
-        .opacity(s.cardOn || s.toastText != nil ? 1 : 0)
+        .opacity(s.toastText != nil || (s.loading && s.canRehome) ? 1 : 0)
     }
 }

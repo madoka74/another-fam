@@ -9,16 +9,10 @@ struct HomeView: View {
     private var model: AppModel { AppModel.shared }
 
     var body: some View {
-        Group {
-            if model.pet != nil {
-                TabView(selection: Binding(get: { model.tab }, set: { model.tab = $0 })) {
-                    HomeTab().tabItem { Label("홈", systemImage: "pawprint.fill") }.tag(0)
-                    StorageTab().tabItem { Label("보관함", systemImage: "archivebox.fill") }.tag(1)
-                    ShopTab().tabItem { Label("상점", systemImage: "cart.fill") }.tag(2)
-                    SettingsTab().tabItem { Label("설정", systemImage: "gearshape.fill") }.tag(3)
-                }
-            } else {
-                AdoptView()
+        // 보금자리(입양소) · 홈 · 보관함 · 상점 · 설정 — 공간 안 메뉴판(MenuPanel)과 같은 탭 (0.10.15)
+        TabView(selection: Binding(get: { model.tab }, set: { model.tab = $0 })) {
+            ForEach(MenuTab.order) { t in
+                t.view.tabItem { Label(t.title, systemImage: t.icon) }.tag(t.rawValue)
             }
         }
         // 팸과 함께하는 동안엔 메뉴를 닫아 팸에 집중 (닫아도 팸을 바라보고 집으면 카드의 '메뉴'로 다시 엶)
@@ -52,7 +46,9 @@ struct HomeView: View {
             model.openMain = { ow(id: "main") }
             model.closeMain = { dw(id: "main") }
             model.mainOpen = true
+            if model.family.pets.isEmpty { model.tab = MenuTab.adopt.rawValue }
             model.session?.closeCard()
+            model.session?.closeMenu()                       // 메뉴는 늘 하나만 (창이 뜨면 공간 안 메뉴판은 닫음)
             model.wake()
         }
         .onDisappear { model.mainOpen = false }
@@ -66,62 +62,176 @@ struct HomeView: View {
     }
 }
 
-// MARK: - 입양
-struct AdoptView: View {
-    @State private var name = ""
-    @State private var male = false
-    private let breeds: [(id: String, name: String, note: String)] = [("maltese", "말티즈", "희고 작은 친구 · 다 자라면 3kg")]
-    @State private var pick = "maltese"
+// MARK: - 메뉴 탭 (창·공간 안 메뉴판이 함께 씀)
+enum MenuTab: Int, Identifiable {
+    case adopt = 4, home = 0, storage = 1, shop = 2, settings = 3
+    static let order: [MenuTab] = [.adopt, .home, .storage, .shop, .settings]
+    var id: Int { rawValue }
+    var title: String {
+        switch self {
+        case .adopt: return "보금자리"
+        case .home: return "홈"
+        case .storage: return "보관함"
+        case .shop: return "상점"
+        case .settings: return "설정"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .adopt: return "heart.circle.fill"
+        case .home: return "pawprint.fill"
+        case .storage: return "archivebox.fill"
+        case .shop: return "cart.fill"
+        case .settings: return "gearshape.fill"
+        }
+    }
+    @MainActor var view: AnyView {
+        if self != .adopt && AppModel.shared.pet == nil { return AnyView(NoPetView()) }
+        switch self {
+        case .adopt: return AnyView(AdoptTab())
+        case .home: return AnyView(HomeTab())
+        case .storage: return AnyView(StorageTab())
+        case .shop: return AnyView(ShopTab())
+        case .settings: return AnyView(SettingsTab())
+        }
+    }
+}
+
+/// 아직 팸이 없을 때 (보금자리 말고 다른 탭)
+struct NoPetView: View {
+    var body: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "heart.circle").font(.system(size: 54)).foregroundStyle(.secondary)
+            Text("보금자리에서 가족을 맞이해 주세요").font(.title3).foregroundStyle(.secondary)
+            Button("보금자리로") { AppModel.shared.tab = MenuTab.adopt.rawValue }.buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// 공간 안 메인 메뉴판 (0.10.15): 함께하는 동안 메뉴를 창(시스템이 곁에 낮고 기울여 둠) 대신 팸 카드가 뜨던 자리에 같은 방식으로.
+/// 카드와 메뉴판은 한 번에 하나만 (PlaySession.openMenu)
+struct MenuPanel: View {
+    let s: PlaySession
+    private var model: AppModel { AppModel.shared }
 
     var body: some View {
-        VStack(spacing: 26) {
-            Text("어나더 팸").font(.extraLargeTitle)
-            Text("가족을 맞이해요").font(.title3).foregroundStyle(.secondary)
-            HStack(spacing: 16) {
-                ForEach(breeds, id: \.id) { b in
-                    Button { pick = b.id } label: {
-                        VStack(spacing: 10) {
-                            Image(systemName: "dog.fill").font(.system(size: 54))
-                            Text(b.name).font(.title3.weight(.semibold))
-                            Text(b.note).font(.caption).foregroundStyle(.secondary)
-                        }
-                        .frame(width: 240, height: 180)
-                        .background(.white.opacity(pick == b.id ? 0.22 : 0.08), in: RoundedRectangle(cornerRadius: 24))
-                        .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 24))
-                        .hoverEffect(.highlight)
-                        .hoverEffect(isEnabled: true) { e, on, _ in e.scaleEffect(on ? 1.04 : 1) }      // 고리·재주 단추와 같은 바라보기 효과
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                ForEach(MenuTab.order) { t in
+                    let on = model.tab == t.rawValue
+                    Button { model.tab = t.rawValue } label: {
+                        Label(t.title, systemImage: t.icon)
+                            .font(.callout.weight(.semibold))
+                            .padding(.horizontal, 16).padding(.vertical, 9)
+                            .background(.white.opacity(on ? 0.26 : 0), in: Capsule())
+                            .foregroundStyle(on ? Color.primary : Color.secondary)
+                            // 고리·재주 단추와 같은 바라보기 효과 (캡슐 그대로 밝아지고 조금 커짐)
+                            .contentShape(.hoverEffect, Capsule())
+                            .hoverEffect(.highlight)
+                            .hoverEffect(isEnabled: true) { e, on, _ in e.scaleEffect(on ? 1.06 : 1) }
                     }
                     .buttonStyle(RingPress())
                 }
+                Spacer()
+                Button { s.closeMenu() } label: { Image(systemName: "xmark") }.buttonBorderShape(.circle)
             }
-            HStack(spacing: 16) {
-                TextField("이름", text: $name).textFieldStyle(.roundedBorder).frame(width: 240)
-                Picker("", selection: $male) {
-                    Text("여자아이").tag(false)
-                    Text("남자아이").tag(true)
-                }
-                .pickerStyle(.segmented).frame(width: 240)
-            }
-            Button { AppModel.shared.adopt(name: name, male: male) } label: {
-                Text("입양하기").font(.title3.weight(.semibold)).padding(.horizontal, 36).padding(.vertical, 8)
-            }
-            .buttonStyle(.borderedProminent)
+            .padding(.horizontal, 22).padding(.top, 18).padding(.bottom, 6)
+            (MenuTab(rawValue: model.tab) ?? .home).view
+                .frame(width: 860, height: 600)
         }
-        .padding(40)
+        .overlay(alignment: .bottom) {
+            if let n = model.notice {
+                HStack(spacing: 12) {
+                    Text(n).font(.callout)
+                    Button { model.notice = nil } label: { Image(systemName: "xmark") }.buttonBorderShape(.circle)
+                }
+                .padding(.horizontal, 20).padding(.vertical, 10)
+                .glassBackgroundEffect()
+                .padding(.bottom, 20)
+            }
+        }
+        .glassBackgroundEffect()
+        .opacity(s.menuOn ? 1 : 0)
+    }
+}
+
+// MARK: - 보금자리 (입양소)
+/// 입양할 수 있는 팸들을 모아 보여 줌. 같은 종류도 여러 번 입양할 수 있음 (이름·성별·나이가 다른 새 팸)
+struct AdoptTab: View {
+    @State private var name = ""
+    @State private var male = false
+    @State private var pick = Breeds.all[0].id
+    private var model: AppModel { AppModel.shared }
+
+    var body: some View {
+        let b = Breeds.of(pick)
+        ScrollView {
+            VStack(spacing: 24) {
+                VStack(spacing: 6) {
+                    Text("보금자리").font(.extraLargeTitle)
+                    Text(model.family.pets.isEmpty ? "가족을 기다리는 팸들이에요" : "우리 집 팸 \(model.family.pets.count) · 새 가족을 더 맞이할 수 있어요")
+                        .font(.title3).foregroundStyle(.secondary)
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 16)], spacing: 16) {
+                    ForEach(Breeds.all) { x in
+                        Button { pick = x.id } label: {
+                            VStack(spacing: 10) {
+                                Image(systemName: x.icon).font(.system(size: 54))
+                                Text(x.name).font(.title3.weight(.semibold))
+                                Text(x.note).font(.caption).foregroundStyle(.secondary)
+                            }
+                            .frame(width: 230, height: 170)
+                            .background(.white.opacity(pick == x.id ? 0.22 : 0.08), in: RoundedRectangle(cornerRadius: 24))
+                            .overlay(RoundedRectangle(cornerRadius: 24).stroke(.white.opacity(pick == x.id ? 0.55 : 0), lineWidth: 1.5))
+                            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 24))
+                            .hoverEffect(.highlight)
+                            .hoverEffect(isEnabled: true) { e, on, _ in e.scaleEffect(on ? 1.04 : 1) }      // 고리·재주 단추와 같은 바라보기 효과
+                        }
+                        .buttonStyle(RingPress())
+                    }
+                }
+                .frame(maxWidth: 760)
+                Text(b.about).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 620)
+                HStack(spacing: 16) {
+                    TextField("이름", text: $name).textFieldStyle(.roundedBorder).frame(width: 240)
+                    Picker("", selection: $male) {
+                        Text("여자아이").tag(false)
+                        Text("남자아이").tag(true)
+                    }
+                    .pickerStyle(.segmented).frame(width: 240)
+                }
+                Button {
+                    model.adopt(b, name: name, male: male)
+                    name = ""
+                } label: {
+                    Text("\(b.name) 입양하기").font(.title3.weight(.semibold)).padding(.horizontal, 36).padding(.vertical, 8)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(36)
+            .frame(maxWidth: .infinity)
+        }
     }
 }
 
 // MARK: - 홈
+/// 우리 집 팸들 가운데 함께할 팸을 고름 (둘 이상일 때 위에 줄로). 고른 팸의 상태와 '함께하기'.
+/// 함께하는 중에 다른 팸을 고르면 그 팸의 상태를 보고 '바꿔 함께하기'로 지금 팸은 쉬고 그 팸과 함께함
 struct HomeTab: View {
     private var model: AppModel { AppModel.shared }
     @State private var info: (key: String, text: String)?
 
     var body: some View {
-        if let p = model.pet {
+        let fam = model.family
+        if let p = model.menuSel.flatMap({ fam.pet($0) }) ?? model.pet {
             let age = p.age()
+            let active = p.id == fam.active
+            let out = model.playOpen && active                     // 지금 공간에 나와 함께하는 팸
             // 설정의 '함께한 날'과 같은 셈 (지난 날수, 소수 한 자리) — 0.7.0 은 '+1일째'로 세어 1일이 2일로 보였음
             let days = ((Date().timeIntervalSince1970 - p.born) / 86400).formatted(.number.precision(.fractionLength(0...1)))
-            VStack(spacing: 24) {
+            VStack(spacing: 22) {
+                if fam.pets.count > 1 { petRow(fam, sel: p.id) }
                 HStack(alignment: .firstTextBaseline, spacing: 14) {
                     Text(p.name).font(.extraLargeTitle)
                     Text(PetState.ageText(age)).font(.title2).foregroundStyle(.secondary)
@@ -140,15 +250,25 @@ struct HomeTab: View {
                         .buttonStyle(RingPress())
                     }
                 }
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
                 if let info { Text(info.text).font(.title3).multilineTextAlignment(.center) }
                 HStack(spacing: 16) {
-                    Button { model.playOpen ? model.rest() : model.play() } label: {
-                        Label(model.playOpen ? "쉬기" : "함께하기", systemImage: model.playOpen ? "house.fill" : "pawprint.fill")
-                            .font(.title3.weight(.semibold)).frame(width: 220, height: 44)
+                    if model.playOpen && !active {
+                        let cur = model.pet?.name ?? ""
+                        Button { model.switchPlay(to: p.id) } label: {
+                            Label("\(p.name)\(Josa.wa(p.name)) 함께하기", systemImage: "arrow.left.arrow.right")
+                                .font(.title3.weight(.semibold)).frame(minWidth: 240, minHeight: 44)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Text("\(cur)\(Josa.batchim(cur) ? "이는" : "는") 쉬러 가요").font(.callout).foregroundStyle(.secondary)
+                    } else {
+                        Button { model.playOpen ? model.rest() : model.play() } label: {
+                            Label(model.playOpen ? "쉬기" : "함께하기", systemImage: model.playOpen ? "house.fill" : "pawprint.fill")
+                                .font(.title3.weight(.semibold)).frame(width: 220, height: 44)
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
-                    .buttonStyle(.borderedProminent)
-                    if p.has("leash") && age >= 70 {
+                    if out && p.has("leash") && age >= 70 {
                         Button {
                             guard let s = model.session else { model.notice = "먼저 '함께하기'를 눌러 주세요"; return }
                             s.setWalking(!s.walking)
@@ -161,7 +281,47 @@ struct HomeTab: View {
                 if p.asleep { Label("자는 중", systemImage: "zzz").foregroundStyle(.secondary) }
                 Spacer(minLength: 0)
             }
-            .padding(40)
+            .padding(36)
+            .onChange(of: p.id) { _, _ in info = nil }
+        }
+    }
+
+    /// 우리 집 팸들: 이름·나이 카드. 지금 함께하는 팸에는 표시
+    private func petRow(_ fam: Family, sel: String) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(fam.pets, id: \.id) { q in
+                    let on = q.id == sel
+                    Button { model.select(q.id) } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: Breeds.of(q.species).icon).font(.title3)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(q.name).font(.headline)
+                                Text(q.id == fam.active && model.playOpen ? "함께하는 중" : PetState.ageText(q.age()))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 9)
+                        .background(.white.opacity(on ? 0.24 : 0.08), in: Capsule())
+                        .overlay(Capsule().stroke(.white.opacity(on ? 0.55 : 0), lineWidth: 1.5))
+                        // 고리·재주 단추와 같은 바라보기 효과
+                        .contentShape(.hoverEffect, Capsule())
+                        .hoverEffect(.highlight)
+                        .hoverEffect(isEnabled: true) { e, on, _ in e.scaleEffect(on ? 1.06 : 1) }
+                    }
+                    .buttonStyle(RingPress())
+                }
+                Button { model.tab = MenuTab.adopt.rawValue } label: {
+                    Label("보금자리", systemImage: "plus").font(.callout.weight(.medium))
+                        .padding(.horizontal, 16).padding(.vertical, 14)
+                        .background(.white.opacity(0.05), in: Capsule())
+                        .contentShape(.hoverEffect, Capsule())
+                        .hoverEffect(.highlight)
+                        .hoverEffect(isEnabled: true) { e, on, _ in e.scaleEffect(on ? 1.06 : 1) }
+                }
+                .buttonStyle(RingPress())
+            }
+            .padding(.vertical, 6).padding(.horizontal, 4)
         }
     }
 }
@@ -448,8 +608,9 @@ struct SettingsTab: View {
                 }
             }
             Section("가족") {
-                Button("처음부터 다시", role: .destructive) { askReset = true }
-                    .disabled(model.playOpen)
+                // 여러 팸 (0.10.15): 지금 고른 팸과만 헤어짐 — 다른 팸들은 그대로
+                Button("\(model.pet?.name ?? "")\(Josa.wa(model.pet?.name ?? "")) 헤어지기", role: .destructive) { askReset = true }
+                    .disabled(model.playOpen || model.pet == nil)
             }
             Section("정보") {
                 LabeledContent("버전", value: "\(v) (\(b))")
@@ -460,7 +621,7 @@ struct SettingsTab: View {
             SoundBank.shared.master = volume
             if let p = model.pet { entry = ((Date().timeIntervalSince1970 - p.born) / 86400).formatted(.number.precision(.fractionLength(0...1)).grouping(.never)) }
         }
-        .confirmationDialog("지금 가족과 헤어지고 처음부터 다시 시작할까요?", isPresented: $askReset, titleVisibility: .visible) {
+        .confirmationDialog("\(model.pet?.name ?? "")\(Josa.wa(model.pet?.name ?? "")) 헤어질까요? 다른 팸들은 그대로예요.", isPresented: $askReset, titleVisibility: .visible) {
             Button("헤어지기", role: .destructive) { model.reset() }
             Button("취소", role: .cancel) {}
         }

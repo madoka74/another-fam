@@ -57,6 +57,7 @@ final class Prop {
     }
     private var waterLine: ModelEntity?             // 물그릇 벽에 닿은 물 높이 선
     private var waterBuilt: Float = -1              // 물 덩어리를 마지막으로 만든 양
+    private var foodBuilt: Float = -1               // 사료 더미를 마지막으로 만든 양
 
     /// 물 재질: 양이 많을수록 더 푸르고 진함 (실제 물도 깊을수록 그릇 바닥이 덜 보이고 푸르게 보임)
     static func waterMat(_ f: Float, line: Bool) -> PhysicallyBasedMaterial {
@@ -580,11 +581,20 @@ final class Prop {
             }
         case "bowl_food":
             // 사료: 가득일수록 더미가 높고 넓음. 아주 적으면 바닥에 몇 알만
+            // 0.10.15: 더미를 그릇 안쪽 벽(아래로 갈수록 좁아짐)을 따라 만듦 — 전엔 맨 위 넓이(7.4cm)의 원기둥을 바닥까지 늘려
+            // 그릇 아래쪽(안쪽 6cm)에서 벽 밖으로 삐져나와, 그릇 바깥 아래가 사료 색으로 보였음
             let y = contentY
             let r = Prop.bowlR(y) - 0.003
             c.isEnabled = fill > 0.12
-            c.position = SIMD3<Float>(0, 0.006, 0)
-            c.scale = SIMD3<Float>(r, max(0.2, (y - 0.010) / 0.009), r)
+            if c.isEnabled && (foodBuilt < 0 || abs(fill - foodBuilt) > 0.012) {
+                foodBuilt = fill
+                let y0: Float = 0.0075
+                let prof: [(Float, Float)] = [(0, y0), (Prop.bowlR(y0) - 0.0025, y0), (Prop.bowlR(y - 0.002) - 0.0025, y - 0.002),
+                                              (r * 0.97, y - 0.0005), (r * 0.7, y + 0.002), (0, y + 0.003)]
+                if let m = Geo.lathe(prof, seg: 40) { c.model?.mesh = m }
+            }
+            c.position = .zero
+            c.scale = SIMD3<Float>(repeating: 1)
             for (k, e) in kib.enumerated() {
                 if k == 2 {
                     e.isEnabled = fill > 0.005 && fill <= 0.12

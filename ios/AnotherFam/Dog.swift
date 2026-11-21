@@ -508,6 +508,17 @@ final class Dog {
     /// 이 물건 위에 있는지 (강아지가 올라가 있는 잠자리는 손으로 옮겨지지 않게)
     func isOn(_ p: Prop) -> Bool { p.top(at: pos) != nil }
 
+    /// 이 점(세계 좌표)이 강아지 몸(관절들을 감싼 상자 + 털 두께) 가까이인지 — pad 는 세계 m (0.10.15 탭 거르기)
+    func nearBody(_ w: SIMD3<Float>, pad: Float) -> Bool {
+        guard entity.isEnabled else { return false }
+        let l = entity.convert(position: w, from: nil)
+        var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)
+        for t in skin.T { lo = simd_min(lo, t); hi = simd_max(hi, t) }
+        let g = max(0.2, entity.scale.x)
+        let m = SIMD3<Float>(repeating: 0.07 + pad / g)          // 털 7cm(모델 크기 1 기준) + 여유
+        return simd_all(l .>= lo - m) && simd_all(l .<= hi + m)
+    }
+
     // MARK: 행동 바꾸기
     private func begin(_ a: Act, for dur: Double = 0) {
         if act == .tug || act == .toy || act == .fetch { if a != .toy && a != .fetch && a != .tug { dropCarry() } }

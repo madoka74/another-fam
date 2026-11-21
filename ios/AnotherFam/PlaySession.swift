@@ -23,6 +23,7 @@ final class PlaySession {
 
     // 화면에 보이는 것
     var cardOn = false
+    var menuOn = false                  // 공간 안 메인 메뉴판 (0.10.15: 창 대신)
     var toastText: String?
     var shown = PetState()
     var walking = false
@@ -31,6 +32,12 @@ final class PlaySession {
     var holding = false                 // 안고 있는 동안: 손이 강아지를 가리지 않게
 
     @ObservationIgnored private var card: Entity?
+    @ObservationIgnored private var menu: Entity?
+    @ObservationIgnored private var toastE: Entity?
+    @ObservationIgnored private var menuGoal: (at: SIMD3<Float>, k: Float, from: SIMD3<Float>)?
+    @ObservationIgnored private var menuFrom: SIMD3<Float>?
+    @ObservationIgnored private var toastGoal: (at: SIMD3<Float>, look: SIMD3<Float>)?
+    @ObservationIgnored var userLook = SIMD3<Float>(0, 0, -1)          // 머리가 보는 쪽 (위아래 포함)
     @ObservationIgnored private var cardUntil: Double = 0
     @ObservationIgnored private var toastUntil: Double = 0
     @ObservationIgnored private var publishAt: Double = 0
@@ -68,6 +75,10 @@ final class PlaySession {
     @ObservationIgnored private var hourAt: Double = -99
     @ObservationIgnored private var startAt: Double = 0
     @ObservationIgnored private var lastFloor: Float = -999
+    @ObservationIgnored private var otherPins = Set<UUID>()
+    @ObservationIgnored private var begun = false
+    /// 물건 고정점 목록은 팸마다 (0.10.15) — 예전 한 마리 목록은 처음 읽을 때 그 팸 것으로 옮김(Store.load)
+    private var pinKey: String { "af.anchors." + pet.id }
 
     // MARK: 시작·끝
     func start() async {
@@ -77,14 +88,21 @@ final class PlaySession {
         if p.placed.isEmpty && p.layout.isEmpty { p.placed = ["blanket", "bowl_water"] }      // 입양 키트를 처음 한 번 꺼내 둠
         pet = p
         shown = p
+        begun = true
         model.session = self
         SoundBank.shared.preload()
         root.addChild(room.root)
         root.components.set(PhysicsSimulationComponent())      // 물리 기준을 공간 하나로 (중력 9.8m/s²)
         room.onAnchor = { [weak self] a, removed in self?.anchor(a, removed) }
         if let s = UserDefaults.standard.string(forKey: "af.home"), let id = UUID(uuidString: s) { homeId = id }
-        if let m = UserDefaults.standard.dictionary(forKey: "af.anchors") as? [String: String] {
+        if let m = UserDefaults.standard.dictionary(forKey: pinKey) as? [String: String] {
             for (k, v) in m { if let id = UUID(uuidString: v) { propAnchor[k] = id } }
+        }
+        // 다른 팸들이 꺼내 둔 물건의 고정점: 이 공간에선 쓰지 않지만 '버린 고정점'으로 알고 지우면 안 됨 (0.10.15 여러 팸)
+        for o in model.family.pets where o.id != p.id {
+            if let m = UserDefaults.standard.dictionary(forKey: "af.anchors." + o.id) as? [String: String] {
+                for v in m.values { if let id = UUID(uuidString: v) { otherPins.insert(id) } }
+            }
         }
         // 함께 있는 동안은 아이폰 알림을 멈추게 알림 (폰은 이 표시가 있는 동안 알림을 예약하지 않음)
         pet.together = true
@@ -109,11 +127,15 @@ final class PlaySession {
                 homeLost = true
             }
         }
-        if let d = Dog(self) {
-            dog = d
-            d.entity.isEnabled = false
-            root.addChild(d.entity)
-        } else { toast("강아지 모델을 읽지 못했어요") }
+        // 팸 종류에 맞는 몸 (지금은 강아지 하나 — 새 종류는 Kind 와 여기 한 갈래를 더함)
+        switch Breeds.of(pet.species).kind {
+        case .dog:
+            if let d = Dog(self) {
+                dog = d
+                d.entity.isEnabled = false
+                root.addChild(d.entity)
+            } else { toast("팸 모델을 읽지 못했어요") }
+        }
     }
 
     func stop() {
@@ -121,11 +143,14 @@ final class PlaySession {
         ended = true
         ear.stop()
         room.stop()
-        saveLayout()
-        pet.lastSim = Date().timeIntervalSince1970
-        pet.together = false
-        AppModel.shared.pet = pet
-        Store.saveFinal(pet)
+        // 시작하지 못한 공간(팸 없음)은 저장하지 않음 — 빈 자리표 팸이 가족에 끼어들지 않게 (0.10.15)
+        if begun {
+            saveLayout()
+            pet.lastSim = Date().timeIntervalSince1970
+            pet.together = false
+            AppModel.shared.pet = pet
+            Store.saveFinal(pet)
+        }
         if AppModel.shared.session === self { AppModel.shared.session = nil }
         AppModel.shared.playClosed()
     }
@@ -135,6 +160,28 @@ final class PlaySession {
         e.isEnabled = false
         root.addChild(e)
     }
+
+    func attachMenu(_ e: Entity) {
+        menu = e
+        e.isEnabled = false
+        root.addChild(e)
+    }
+
+    func attachToast(_ e: Entity) {
+        toastE = e
+        e.isEnabled = false
+        root.addChild(e)
+    }
+
+    /// 메뉴판 열기 (카드의 '메뉴' · 밥그릇이 없을 때 상점 등): 카드는 닫고 그 자리에 메뉴판 — 카드와 메뉴판은 한 번에 하나만
+    func openMenu() {
+        if let c = card, c.isEnabled { menuFrom = c.position } else { menuFrom = nil }
+        cardOn = false
+        menuGoal = nil
+        menuOn = true
+    }
+
+    func closeMenu() { menuOn = false }
 
     /// 눈에서 판(가운데·네 모서리)까지 가는 길에 처음 부딪히는 것까지의 거리 (판·강아지는 빼고). 없으면 아주 큰 값
     private func freeDist(eye: SIMD3<Float>, center: SIMD3<Float>, halfW: Float, halfH: Float, skip: [Entity]) -> Float {
@@ -149,6 +196,7 @@ final class PlaySession {
             let len = simd_distance(eye, p)
             for h in sc.raycast(from: eye, to: eye + (p - eye) / len * (len + 0.05), query: .all, mask: .all, relativeTo: nil) {
                 if skip.contains(where: { under(h.entity, $0) }) { continue }
+                if [card, menu, toastE].contains(where: { $0 != nil && under(h.entity, $0!) }) { continue }
                 if let d = dog, under(h.entity, d.entity) { continue }
                 if props.contains(where: { $0.heldBy != nil && under(h.entity, $0.entity) }) { continue }
                 // 판 쪽 거리로 바꿔 셈 (모서리 길은 가운데보다 김)
@@ -166,7 +214,7 @@ final class PlaySession {
         var best: Float?
         for h in sc.raycast(from: a, to: b, query: .all, mask: .all, relativeTo: nil) {
             if let d = dog, under(h.entity, d.entity) { continue }
-            if let c = card, under(h.entity, c) { continue }
+            if [card, menu, toastE].contains(where: { $0 != nil && under(h.entity, $0!) }) { continue }
             // 손에 든 것은 빼고 (0.9: 패드를 들고 방석 위를 지나가면 강아지가 패드 위로 옮겨졌다 돌아왔음)
             if props.contains(where: { ($0.kind != .fixed || roomOnly || $0.heldBy != nil) && under(h.entity, $0.entity) }) { continue }
             best = max(best ?? -999, h.position.y)
@@ -212,7 +260,7 @@ final class PlaySession {
             if spawned, let k = propAnchor.first(where: { $0.value == a.id })?.key, let p = prop(k) { followAnchor(p, a.id) }
         } else if a.id == oldHomeId {
             if a.isTracked { restoreHome(a) }
-        } else if adding == 0 && !makingHome {
+        } else if adding == 0 && !makingHome && !otherPins.contains(a.id) {
             Task { await room.removeAnchor(a.id) }          // 지난번에 쓰고 버린 고정점 정리
         }
     }
@@ -301,7 +349,7 @@ final class PlaySession {
     private func savePins() {
         var d: [String: String] = [:]
         for (k, v) in propAnchor { d[k] = v.uuidString }
-        UserDefaults.standard.set(d, forKey: "af.anchors")
+        UserDefaults.standard.set(d, forKey: pinKey)
     }
 
     /// 임시 집 → 늦게 찾은 지난 집. 꺼내 둔 것들을 저장된 자리로 옮기고 강아지도 잠자리로
@@ -690,25 +738,32 @@ final class PlaySession {
         // 0.10.9: 쓰다듬는 손은 손가락이 오므려져 엄지·검지가 붙는 때가 많아 '집기'로 잘못 읽혀 0.10.7 의 거르기를 통과했음 →
         // 손가락·손바닥이 강아지 몸에 닿아 있거나 막 떨어진 뒤(1초)엔 탭을 받지 않음. 손이 몸에 닿지 않은 채 바라보고 집으면
         // 손이 강아지 바로 옆에 있어도 카드가 뜸 (0.9 처럼 '손이 30cm 안이면 무시'가 아님)
-        if d.touching || now - d.lastTouchAt < 1.0 { return }
+        // 0.10.15: 그래도 쓰다듬다 카드가 떴음 — 닿음 판정(머리 공·몸통 기둥)이 엉덩이·꼬리·다리·귀는 덮지 못했고, 아기 땐 몸이 작아
+        // 판정 거리도 함께 줄었으며, 탭 자리는 엄지·검지 사이(집은 자리)만 비교해 가운뎃손가락·손바닥으로 쓰다듬으면 통과했음.
+        // → ① 손(손바닥·손가락)이 강아지 몸 상자(관절 전체 + 털 + 3cm) 안에 들어왔던 뒤 0.8초는 탭을 받지 않음
+        //   ② 탭 자리에 어느 손가락·손바닥이든 닿아 있으면 직접 만진 것. 바라보고 집는 손은 보통 몸 곁(무릎·허리)에 있어 그대로 뜸
+        if d.touching || now - d.lastTouchAt < 1.2 || now - handNearDogAt < 0.8 { return }
+        if let w, touchedDirectly(w) { return }
         if now - handSeenAt < 1.0 {
             guard now - pinchAt < 0.5 else { return }
             if let w, simd_distance(pinchGrip, w) < 0.05 { return }
-        } else if let w, touchedDirectly(w) { return }
+        }
         if !cardOn && AppModel.shared.mainOpen { AppModel.shared.closeMain?() }     // 메뉴는 늘 하나만
+        if menuOn { menuOn = false; cardOn = false }                                 // 메뉴판이 떠 있으면 닫고 카드로
         cardOn.toggle()
         cardUntil = now + 15
         ringInfo = nil
     }
 
     @ObservationIgnored private var handSeenAt: Double = -9
+    @ObservationIgnored private var handNearDogAt: Double = -9
     @ObservationIgnored private var pinchAt: Double = -9
     @ObservationIgnored private var pinchGrip = SIMD3<Float>(0, -9, 0)
 
-    /// 탭 자리에 손가락·손바닥이 닿아 있음 = 직접 만진 것 (손이 안 보일 때만 씀)
+    /// 탭 자리에 손가락·손바닥이 닿아 있음 = 직접 만진 것
     private func touchedDirectly(_ w: SIMD3<Float>) -> Bool {
         for h in room.hands where h.seen {
-            if simd_distance(h.index, w) < 0.04 || simd_distance(h.thumb, w) < 0.04 || simd_distance(h.middle, w) < 0.04 || simd_distance(h.palm, w) < 0.06 { return true }
+            if simd_distance(h.index, w) < 0.06 || simd_distance(h.thumb, w) < 0.06 || simd_distance(h.middle, w) < 0.06 || simd_distance(h.palm, w) < 0.08 { return true }
         }
         return false
     }
@@ -794,7 +849,7 @@ final class PlaySession {
 
     // MARK: 매 화면
     func tick(_ dt0: Float) {
-        guard !ended else { return }
+        guard !ended, begun else { return }
         let dt = min(0.1, dt0)
         now = CACurrentMediaTime()
         if now - hourAt > 20 {
@@ -807,6 +862,7 @@ final class PlaySession {
         if let h = room.head() {
             userPos = simd_make_float3(h.columns.3)
             var f = -simd_make_float3(h.columns.2)
+            if simd_length(f) > 0.05 { userLook = simd_normalize(f) }
             f.y = 0
             if simd_length(f) > 0.05 { userFwd = simd_normalize(f) }
             if !headOK { headOK = true; lastUser = userPos }
@@ -894,21 +950,30 @@ final class PlaySession {
     /// 카드 자리: 뜰 때 한 번 정하고 그대로 둠 (0.7.0 까지 매 화면 강아지 머리를 따라가 강아지가 움직이면 같이 흔들려 어지러웠음).
     /// 강아지가 50cm 넘게 옮겨 가거나 내가 60cm 넘게 움직였을 때만 새 자리로 부드럽게 옮김
     private func showCard() {
-        guard let c = card else { return }
         if cardOn && now >= cardUntil { cardOn = false }
         if toastText != nil && now >= toastUntil { toastText = nil }
-        let on = cardOn || toastText != nil
-        if c.isEnabled != on { c.isEnabled = on }
-        guard on else { cardGoal = nil; return }
-        let want = cardSpot(c)
-        if let g = cardGoal {
-            if simd_distance(g.at, want.at) > 0.5 || simd_distance(g.from, userPos) > 0.6 { cardGoal = (want.at, want.k, userPos) }
+        if let c = card {
+            if c.isEnabled != cardOn { c.isEnabled = cardOn }
+            if cardOn { follow(c, goal: &cardGoal, minD: 0.6, start: nil) } else { cardGoal = nil }
+        }
+        if let m = menu {
+            if m.isEnabled != menuOn { m.isEnabled = menuOn }
+            if menuOn { follow(m, goal: &menuGoal, minD: 0.85, start: menuFrom) } else { menuGoal = nil }
+        }
+        showToast()
+    }
+
+    /// 판(카드·메뉴판)을 정한 자리로: 뜰 때 한 번 정하고 그대로, 강아지가 50cm 넘게 옮겨 가거나 내가 60cm 넘게 움직였을 때만 부드럽게 옮김
+    private func follow(_ c: Entity, goal: inout (at: SIMD3<Float>, k: Float, from: SIMD3<Float>)?, minD: Float, start: SIMD3<Float>?) {
+        let want = cardSpot(c, minD: minD)
+        if let g = goal {
+            if simd_distance(g.at, want.at) > 0.5 || simd_distance(g.from, userPos) > 0.6 { goal = (want.at, want.k, userPos) }
         } else {
-            cardGoal = (want.at, want.k, userPos)
-            c.position = want.at
+            goal = (want.at, want.k, userPos)
+            c.position = start ?? want.at                   // 메뉴판은 카드가 있던 자리에서 제자리로 부드럽게
             c.scale = SIMD3<Float>(repeating: want.k)
         }
-        guard let g = cardGoal else { return }
+        guard let g = goal else { return }
         let a = min(1, Float(1.0 / 60.0) * 5)
         c.position += (g.at - c.position) * a
         let k = c.scale.x + (g.k - c.scale.x) * a
@@ -916,8 +981,10 @@ final class PlaySession {
         c.look(at: c.position - (g.from - c.position), from: c.position, relativeTo: nil)
     }
 
-    /// 카드가 있을 곳: 강아지 몸 위(머리처럼 흔들리는 곳이 아닌 서 있는 자리 기준), 나를 향해 조금 앞. 앞을 가리는 것이 있으면 그보다 가까이
-    private func cardSpot(_ c: Entity) -> (at: SIMD3<Float>, k: Float) {
+    /// 판이 있을 곳: 강아지 몸 위(머리처럼 흔들리는 곳이 아닌 서 있는 자리 기준), 나를 향해 조금 앞. 앞을 가리는 것이 있으면 그보다 가까이.
+    /// 0.10.15: 강아지가 바로 곁이면 너무 가까이 떴음 → 나와 수평으로 minD 보다 가깝지 않게(카드 0.6m, 메뉴판 0.85m).
+    /// 판이 크면(메뉴판) 아래가 바닥에 묻히지 않게 올리고, 눈높이보다 높지 않게
+    private func cardSpot(_ c: Entity, minD: Float) -> (at: SIMD3<Float>, k: Float) {
         var at = userPos + userFwd * 0.9 - SIMD3<Float>(0, 0.15, 0)
         var k = min(1.8, max(0.8, simd_distance(userPos, at) * 0.85))
         if let d = dog, d.entity.isEnabled {
@@ -929,9 +996,22 @@ final class PlaySession {
             let l = simd_length(v)
             if l > 0.01 { at += v / l * min(0.15, l * 0.3) }
         }
+        // 나와의 수평 거리
+        var h = SIMD2<Float>(at.x - userPos.x, at.z - userPos.z)
+        if simd_length(h) < minD {
+            if simd_length(h) < 0.05 { h = SIMD2<Float>(userFwd.x, userFwd.z) }
+            h = simd_normalize(h) * minD
+            at.x = userPos.x + h.x; at.z = userPos.z + h.y
+        }
+        let b = c.visualBounds(relativeTo: c).extents
+        k = min(1.8, max(0.8, simd_distance(userPos, at) * 0.85))
+        if let fy = room.floorY {
+            let half = b.y * k / 2
+            at.y = max(at.y, fy + 0.12 + half)
+            at.y = min(at.y, max(fy + 0.12 + half, userPos.y - 0.05))
+        }
         let d0 = simd_distance(userPos, at)
         if d0 > 0.3 {
-            let b = c.visualBounds(relativeTo: c).extents
             let fr = freeDist(eye: userPos, center: at, halfW: b.x * k / 2, halfH: b.y * k / 2, skip: [c])
             if fr < d0 {
                 let nd = max(0.4, fr - 0.06)
@@ -940,6 +1020,32 @@ final class PlaySession {
             }
         }
         return (at, k)
+    }
+
+    /// 안내(가득 찼어요·봉지를 기울여 주세요 등): 보는 쪽 정면에서 조금 아래(약 15°), 0.8m — 시선 한가운데를 가리지 않으면서
+    /// 뜨자마자 보이게. 0.10.14 까지는 카드 자리(강아지 위)에 떠서, 강아지가 옆에 있으면 시야 오른편 비스듬히 떠 잘 안 보였음.
+    /// 고개를 크게(20° 넘게) 돌릴 때만 따라옴 (계속 따라다니면 어지러움)
+    private func showToast() {
+        guard let e = toastE else { return }
+        let on = toastText != nil || (loading && canRehome)
+        if e.isEnabled != on { e.isEnabled = on }
+        guard on else { toastGoal = nil; return }
+        let pitch: Float = 0.26
+        let lk = userLook
+        // 보는 쪽에서 15° 아래
+        let upP = SIMD3<Float>(0, 1, 0) - lk * lk.y
+        let dir = simd_length(upP) > 0.05 ? simd_normalize(lk * cos(pitch) - simd_normalize(upP) * sin(pitch)) : lk
+        var want = userPos + dir * 0.8
+        if let fy = room.floorY { want.y = max(want.y, fy + 0.2) }
+        if let g = toastGoal {
+            if simd_dot(g.look, lk) < cos(Float(0.35)) || simd_distance(g.at, want) > 0.45 { toastGoal = (want, lk) }
+        } else {
+            toastGoal = (want, lk)
+            e.position = want
+        }
+        guard let g = toastGoal else { return }
+        e.position += (g.at - e.position) * min(1, Float(1.0 / 60.0) * 6)
+        e.look(at: e.position - (userPos - e.position), from: e.position, relativeTo: nil)
     }
 
     private func publish() {
@@ -983,6 +1089,7 @@ final class PlaySession {
         for h in hs where h.seen {
             handSeenAt = now
             if h.pinch { pinchAt = now; pinchGrip = h.grip }
+            if let d = dog, [h.palm, h.index, h.middle, h.thumb].contains(where: { d.nearBody($0, pad: 0.03) }) { handNearDogAt = now }
         }
         for i in 0..<2 {
             let h = hs[i]

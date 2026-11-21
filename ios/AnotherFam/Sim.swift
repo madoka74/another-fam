@@ -86,7 +86,39 @@ enum Stage: Int, CaseIterable {
     }
 }
 
+// MARK: - 팸 종류 (0.10.15): 새 팸(강아지·고양이·다른 동물)은 여기 한 줄과 그 몸(모델·움직임)만 더하면 보금자리에 나와 바로 입양·함께하기가 됨
+enum Kind: String {
+    case dog                    // 몸·움직임·행동 = DogData/DogSkin/DogAnimator/Dog (말티즈 모델)
+}
+
+struct Breed: Identifiable {
+    let id: String              // PetState.species 에 저장되는 값
+    let name: String
+    let kind: Kind
+    let icon: String
+    let note: String            // 한 줄 소개 (카드)
+    let about: String           // 보금자리에서 고르면 보이는 설명
+}
+
+enum Breeds {
+    static let all: [Breed] = [
+        Breed(id: "maltese", name: "말티즈", kind: .dog, icon: "dog.fill", note: "희고 작은 친구 · 다 자라면 3kg",
+              about: "하얀 털이 보송한 작은 강아지예요. 사람을 좋아하고 애교가 많아 곁에 붙어 있기를 좋아해요. 갓 태어난 아기로 와서 13살까지 자라요"),
+    ]
+    static func of(_ id: String) -> Breed { all.first { $0.id == id } ?? all[0] }
+}
+
+/// 이름 뒤 토씨: 받침 있는 이름은 부를 때 '이'를 붙임 (깨몽 → 깨몽이와, 몽이 → 몽이와)
+enum Josa {
+    static func batchim(_ name: String) -> Bool {
+        guard let c = name.unicodeScalars.last, c.value >= 0xAC00, c.value <= 0xD7A3 else { return false }
+        return (c.value - 0xAC00) % 28 != 0
+    }
+    static func wa(_ name: String) -> String { batchim(name) ? "이와" : "와" }
+}
+
 struct PetState: Codable, Equatable {
+    var id = UUID().uuidString                                       // 팸마다 다른 이름표 (0.10.15 여러 팸)
     var species = "maltese"
     var name = "몽이"
     var male = false
@@ -124,6 +156,7 @@ struct PetState: Codable, Equatable {
         let c = try d.container(keyedBy: CodingKeys.self)
         func g<T: Decodable>(_ k: CodingKeys, _ def: T) -> T { (try? c.decodeIfPresent(T.self, forKey: k)) ?? def }
         let z = PetState()
+        id = g(.id, z.id)
         species = g(.species, z.species); name = g(.name, z.name); male = g(.male, z.male); born = g(.born, z.born)
         food = g(.food, z.food); water = g(.water, z.water); energy = g(.energy, z.energy); potty = g(.potty, z.potty)
         fun = g(.fun, z.fun); love = g(.love, z.love); clean = g(.clean, z.clean)
@@ -243,56 +276,116 @@ struct PetState: Codable, Equatable {
     }
 }
 
-/// 아이클라우드 키-값 저장소의 강아지 (0.3.0): 비전 앱이 저장할 때마다 올리고, 아이폰 앱이 읽어 알림을 계산함.
+/// 우리 집 팸들 (0.10.15): 여러 팸을 입양해 키움. 공간에는 한 번에 한 팸만 나와 함께함(active).
+/// 팸마다 욕구·나이·재주·보관함·포인트·꺼내 둔 물건 자리를 따로 가짐 (나머지 탭은 함께하는 팸 것을 보여 줌)
+struct Family: Codable, Equatable {
+    var pets: [PetState] = []
+    var active = ""
+
+    init() {}
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        pets = (try? c.decodeIfPresent([PetState].self, forKey: .pets)) ?? []
+        active = (try? c.decodeIfPresent(String.self, forKey: .active)) ?? ""
+    }
+
+    var current: PetState? { pets.first { $0.id == active } ?? pets.first }
+    func pet(_ id: String) -> PetState? { pets.first { $0.id == id } }
+
+    mutating func put(_ p: PetState) {
+        if let i = pets.firstIndex(where: { $0.id == p.id }) { pets[i] = p } else { pets.append(p) }
+    }
+
+    /// 저장된 글 → 가족. 예전(0.10.14 까지) 한 마리 글이면 그 팸 하나뿐인 가족으로
+    static func decode(_ d: Foundation.Data) -> Family? {
+        guard let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
+        if o["pets"] != nil { return try? JSONDecoder().decode(Family.self, from: d) }
+        guard o["name"] != nil, let p = try? JSONDecoder().decode(PetState.self, from: d) else { return nil }
+        var f = Family()
+        f.pets = [p]
+        f.active = p.id
+        return f
+    }
+}
+
+/// 아이클라우드 키-값 저장소의 가족 (0.3.0, 0.10.15 부터 여러 팸): 비전 앱이 저장할 때마다 올리고, 아이폰 앱이 읽어 알림을 계산함.
 /// 두 앱이 같은 번들 ID 라 같은 저장소를 씀. 앱을 지웠다 다시 깔면 여기서 되살림
 enum CloudPet {
-    static let key = "pet.v1"
+    static let key = "family.v1"
+    static let legacy = "pet.v1"
 
     static func push(_ d: Foundation.Data) {
         NSUbiquitousKeyValueStore.default.set(d, forKey: key)
     }
 
-    static func pull() -> PetState? {
-        guard let d = NSUbiquitousKeyValueStore.default.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(PetState.self, from: d)
-    }
-
-    static func remove() {
-        NSUbiquitousKeyValueStore.default.removeObject(forKey: key)
+    static func pull() -> Family? {
+        if let d = NSUbiquitousKeyValueStore.default.data(forKey: key), let f = Family.decode(d) { return f }
+        if let d = NSUbiquitousKeyValueStore.default.data(forKey: legacy), let f = Family.decode(d) { return f }
+        return nil
     }
 }
 
-/// 저장: 앱 지원 폴더의 pet.json (업데이트해도 그대로 — 항목이 늘어도 예전 파일을 읽음) + 아이클라우드
+/// 저장: 앱 지원 폴더의 family.json (업데이트해도 그대로 — 항목이 늘어도 예전 파일을 읽음) + 아이클라우드.
+/// 0.10.14 까지의 pet.json(한 마리)은 처음 읽을 때 가족으로 옮김
 enum Store {
+    /// 마지막으로 읽거나 저장한 가족 (공간·메인 창이 저마다 고친 팸을 여기에 모아 저장)
+    nonisolated(unsafe) static var family = Family()
+
     private static var dir: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("anotherfam", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
     }
-    private static var file: URL { dir.appendingPathComponent("pet.json") }
+    private static var file: URL { dir.appendingPathComponent("family.json") }
 
-    static func load() -> PetState? {
+    static func load() -> Family {
+        for name in ["family.json", "family.bak.json"] {
+            if let d = try? Foundation.Data(contentsOf: dir.appendingPathComponent(name)), let f = Family.decode(d) { family = f; return f }
+        }
+        // 예전 한 마리 파일 → 가족으로 옮김 (지난 물건 고정점 목록도 그 팸 것으로)
         for name in ["pet.json", "pet.bak.json"] {
-            if let d = try? Foundation.Data(contentsOf: dir.appendingPathComponent(name)), let p = try? JSONDecoder().decode(PetState.self, from: d) { return p }
+            if let d = try? Foundation.Data(contentsOf: dir.appendingPathComponent(name)), let f = Family.decode(d), let p = f.current {
+                if let pins = UserDefaults.standard.dictionary(forKey: "af.anchors") { UserDefaults.standard.set(pins, forKey: "af.anchors." + p.id) }
+                family = f
+                write(f, force: false)
+                return f
+            }
         }
         // 기기에 없으면(다시 설치) 아이클라우드에서
         NSUbiquitousKeyValueStore.default.synchronize()
-        if let p = CloudPet.pull() {
-            if let d = try? JSONEncoder().encode(p) { try? d.write(to: file, options: .atomic) }
-            return p
+        if let f = CloudPet.pull() {
+            family = f
+            if let d = try? JSONEncoder().encode(f) { try? d.write(to: file, options: .atomic) }
+            return f
         }
-        return nil
+        return Family()
     }
 
+    /// 한 팸을 고쳐 저장 (그 팸만 바꾸고 나머지는 그대로)
     static func save(_ p: PetState, force: Bool = false) {
-        guard let d = try? JSONEncoder().encode(p) else { return }
+        family.put(p)
+        write(family, force: force)
+    }
+
+    /// 가족 전체 저장 (입양·고르기·헤어지기·시간 따라잡기). 같은 팸이 양쪽에 있으면 더 나중에 셈한 것(lastSim)을 씀
+    static func save(family f: Family, force: Bool = false) {
+        var m = f
+        for i in m.pets.indices {
+            if let mine = family.pet(m.pets[i].id), mine.lastSim > m.pets[i].lastSim { m.pets[i] = mine }
+        }
+        family = m
+        write(m, force: force)
+    }
+
+    private static func write(_ f: Family, force: Bool) {
+        guard let d = try? JSONEncoder().encode(f) else { return }
         if FileManager.default.fileExists(atPath: file.path) {
-            try? FileManager.default.removeItem(at: dir.appendingPathComponent("pet.bak.json"))
-            try? FileManager.default.copyItem(at: file, to: dir.appendingPathComponent("pet.bak.json"))
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent("family.bak.json"))
+            try? FileManager.default.copyItem(at: file, to: dir.appendingPathComponent("family.bak.json"))
         }
         try? d.write(to: file, options: .atomic)
         CloudPet.push(d)
-        CloudSync.push(p, data: d, force: force)           // 아이폰 앱을 바로 깨워 알림을 다시 맞추게 (Cloud.swift)
+        CloudSync.push(f, data: d, force: force)           // 아이폰 앱을 바로 깨워 알림을 다시 맞추게 (Cloud.swift)
     }
 
     /// 공간을 닫거나 앱이 뒤로 갈 때: 저장 + 아이클라우드에 바로 올림 (앱이 멈추기 전에 올라가도록 시간을 빌려서)
@@ -301,10 +394,9 @@ enum Store {
         NSUbiquitousKeyValueStore.default.synchronize()
     }
 
-    static func clear() {
-        try? FileManager.default.removeItem(at: file)
-        try? FileManager.default.removeItem(at: dir.appendingPathComponent("pet.bak.json"))
-        CloudPet.remove()
+    static func saveFinal(family f: Family) {
+        save(family: f, force: true)
+        NSUbiquitousKeyValueStore.default.synchronize()
     }
 }
 

@@ -27,9 +27,12 @@ enum CloudSync {
     }
 
     /// 비전 앱: 알림에 영향을 주는 값이 바뀌었거나(10초 간격) 5분이 지났거나 force(공간을 닫을 때)면 올림
-    static func push(_ p: PetState, data: Foundation.Data, force: Bool = false) {
+    /// 0.10.15: 가족(여러 팸) 전체를 올림 — 어느 팸이든 알림에 영향을 주는 값이 바뀌면
+    static func push(_ f: Family, data: Foundation.Data, force: Bool = false) {
         let r = { (x: Float) in Int((x * 10).rounded()) }
-        let sig = "\(r(p.food))\(r(p.water))\(r(p.fun))\(r(p.love))\(r(p.potty))\(p.poops)\(p.asleep)\(r(p.bottle))\(p.together)\(r(p.foodBowl))\(r(p.waterBowl))"
+        let sig = f.pets.map { p in
+            "\(p.id.prefix(4))\(r(p.food))\(r(p.water))\(r(p.fun))\(r(p.love))\(r(p.potty))\(p.poops)\(p.asleep)\(r(p.bottle))\(p.together)\(r(p.foodBowl))\(r(p.waterBowl))"
+        }.joined(separator: "|")
         let now = Date().timeIntervalSince1970
         let changed = sig != lastSig
         guard force || (changed && now - lastPush > 10) || now - lastPush > 300 else { return }
