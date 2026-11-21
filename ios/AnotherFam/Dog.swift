@@ -516,7 +516,8 @@ final class Dog {
         for t in skin.T { lo = simd_min(lo, t); hi = simd_max(hi, t) }
         let g = max(0.2, entity.scale.x)
         let m = SIMD3<Float>(repeating: 0.07 + pad / g)          // 털 7cm(모델 크기 1 기준) + 여유
-        return simd_all(l .>= lo - m) && simd_all(l .<= hi + m)
+        let a = lo - m, b = hi + m
+        return l.x >= a.x && l.y >= a.y && l.z >= a.z && l.x <= b.x && l.y <= b.y && l.z <= b.z
     }
 
     // MARK: 행동 바꾸기
