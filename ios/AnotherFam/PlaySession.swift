@@ -317,7 +317,7 @@ final class PlaySession {
             if spawned, let k = propAnchor.first(where: { $0.value == a.id })?.key, let p = prop(k) { followAnchor(p, a.id) }
         } else if a.id == oldHomeId {
             if a.isTracked { restoreHome(a) }
-        } else if adding == 0 && !makingHome && !otherPins.contains(a.id) {
+        } else if adding == 0 && !makingHome {
             Task { await room.removeAnchor(a.id) }          // 지난번에 쓰고 버린 고정점 정리
         }
     }
