@@ -28,7 +28,6 @@ final class PlaySession {
 
     // 화면에 보이는 것
     var cardOn = false
-    var menuOn = false                  // 공간 안 메인 메뉴판 (0.10.15: 창 대신)
     var toastText: String?
     var shown = Family()
     var cardPid = ""                    // 카드에 보이는 팸 (탭한 팸)
@@ -39,10 +38,7 @@ final class PlaySession {
     var holding = false                 // 안고 있는 동안: 손이 강아지를 가리지 않게
 
     @ObservationIgnored private var card: Entity?
-    @ObservationIgnored private var menu: Entity?
     @ObservationIgnored private var toastE: Entity?
-    @ObservationIgnored private var menuGoal: (at: SIMD3<Float>, k: Float, from: SIMD3<Float>)?
-    @ObservationIgnored private var menuFrom: SIMD3<Float>?
     @ObservationIgnored private var toastGoal: (at: SIMD3<Float>, look: SIMD3<Float>)?
     @ObservationIgnored var userLook = SIMD3<Float>(0, 0, -1)          // 머리가 보는 쪽 (위아래 포함)
     @ObservationIgnored private var cardUntil: Double = 0
@@ -218,11 +214,6 @@ final class PlaySession {
         root.addChild(e)
     }
 
-    func attachMenu(_ e: Entity) {
-        menu = e
-        e.isEnabled = false
-        root.addChild(e)
-    }
 
     func attachToast(_ e: Entity) {
         toastE = e
@@ -230,15 +221,6 @@ final class PlaySession {
         root.addChild(e)
     }
 
-    /// 메뉴판 열기 (카드의 '메뉴' · 밥그릇이 없을 때 상점 등): 카드는 닫고 그 자리에 메뉴판 — 카드와 메뉴판은 한 번에 하나만
-    func openMenu() {
-        if let c = card, c.isEnabled { menuFrom = c.position } else { menuFrom = nil }
-        cardOn = false
-        menuGoal = nil
-        menuOn = true
-    }
-
-    func closeMenu() { menuOn = false }
 
     /// 눈에서 판(가운데·네 모서리)까지 가는 길에 처음 부딪히는 것까지의 거리 (판·강아지는 빼고). 없으면 아주 큰 값
     private func freeDist(eye: SIMD3<Float>, center: SIMD3<Float>, halfW: Float, halfH: Float, skip: [Entity]) -> Float {
@@ -253,7 +235,7 @@ final class PlaySession {
             let len = simd_distance(eye, p)
             for h in sc.raycast(from: eye, to: eye + (p - eye) / len * (len + 0.05), query: .all, mask: .all, relativeTo: nil) {
                 if skip.contains(where: { under(h.entity, $0) }) { continue }
-                if [card, menu, toastE].contains(where: { $0 != nil && under(h.entity, $0!) }) { continue }
+                if [card, toastE].contains(where: { $0 != nil && under(h.entity, $0!) }) { continue }
                 if dogs.contains(where: { under(h.entity, $0.entity) }) { continue }
                 if props.contains(where: { $0.heldBy != nil && under(h.entity, $0.entity) }) { continue }
                 // 판 쪽 거리로 바꿔 셈 (모서리 길은 가운데보다 김)
@@ -271,7 +253,7 @@ final class PlaySession {
         var best: Float?
         for h in sc.raycast(from: a, to: b, query: .all, mask: .all, relativeTo: nil) {
             if dogs.contains(where: { under(h.entity, $0.entity) }) { continue }
-            if [card, menu, toastE].contains(where: { $0 != nil && under(h.entity, $0!) }) { continue }
+            if [card, toastE].contains(where: { $0 != nil && under(h.entity, $0!) }) { continue }
             // 손에 든 것은 빼고 (0.9: 패드를 들고 방석 위를 지나가면 강아지가 패드 위로 옮겨졌다 돌아왔음)
             if props.contains(where: { ($0.kind != .fixed || roomOnly || $0.heldBy != nil) && under(h.entity, $0.entity) }) { continue }
             best = max(best ?? -999, h.position.y)
@@ -840,7 +822,6 @@ final class PlaySession {
             if let w, simd_distance(pinchGrip, w) < 0.05 { return }
         }
         if !cardOn && AppModel.shared.mainOpen { AppModel.shared.closeMain?() }     // 메뉴는 늘 하나만
-        if menuOn { menuOn = false; cardOn = false }                                 // 메뉴판이 떠 있으면 닫고 카드로
         // 다른 팸을 탭하면 카드를 그 팸 것으로 바꿈 (같은 팸이면 닫기)
         if cardOn && cardPid != d.pid { cardGoal = nil; cardPid = d.pid } else { cardPid = d.pid; cardOn.toggle() }
         cardUntil = now + 15
@@ -1060,10 +1041,6 @@ final class PlaySession {
         if let c = card {
             if c.isEnabled != cardOn { c.isEnabled = cardOn }
             if cardOn { follow(c, goal: &cardGoal, minD: 0.6, start: nil) } else { cardGoal = nil }
-        }
-        if let m = menu {
-            if m.isEnabled != menuOn { m.isEnabled = menuOn }
-            if menuOn { follow(m, goal: &menuGoal, minD: 0.85, start: menuFrom) } else { menuGoal = nil }
         }
         showToast()
     }

@@ -9,7 +9,7 @@ struct HomeView: View {
     private var model: AppModel { AppModel.shared }
 
     var body: some View {
-        // 보금자리(입양소) · 홈 · 보관함 · 상점 · 설정 — 공간 안 메뉴판(MenuPanel)과 같은 탭 (0.10.15)
+        // 보금자리(입양소) · 홈 · 보관함 · 상점 · 설정
         TabView(selection: Binding(get: { model.tab }, set: { model.tab = $0 })) {
             ForEach(MenuTab.order) { t in
                 t.view.tabItem { Label(t.title, systemImage: t.icon) }.tag(t.rawValue)
@@ -48,7 +48,6 @@ struct HomeView: View {
             model.mainOpen = true
             if model.family.pets.isEmpty { model.tab = MenuTab.adopt.rawValue }
             model.session?.closeCard()
-            model.session?.closeMenu()                       // 메뉴는 늘 하나만 (창이 뜨면 공간 안 메뉴판은 닫음)
             model.wake()
         }
         .onDisappear { model.mainOpen = false }
@@ -106,53 +105,6 @@ struct NoPetView: View {
             Button("보금자리로") { AppModel.shared.tab = MenuTab.adopt.rawValue }.buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-/// 공간 안 메인 메뉴판 (0.10.15): 함께하는 동안 메뉴를 창(시스템이 곁에 낮고 기울여 둠) 대신 팸 카드가 뜨던 자리에 같은 방식으로.
-/// 카드와 메뉴판은 한 번에 하나만 (PlaySession.openMenu)
-struct MenuPanel: View {
-    let s: PlaySession
-    private var model: AppModel { AppModel.shared }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                ForEach(MenuTab.order) { t in
-                    let on = model.tab == t.rawValue
-                    Button { model.tab = t.rawValue } label: {
-                        Label(t.title, systemImage: t.icon)
-                            .font(.callout.weight(.semibold))
-                            .padding(.horizontal, 16).padding(.vertical, 9)
-                            .background(.white.opacity(on ? 0.26 : 0), in: Capsule())
-                            .foregroundStyle(on ? Color.primary : Color.secondary)
-                            // 고리·재주 단추와 같은 바라보기 효과 (캡슐 그대로 밝아지고 조금 커짐)
-                            .contentShape(.hoverEffect, Capsule())
-                            .hoverEffect(.highlight)
-                            .hoverEffect(isEnabled: true) { e, on, _ in e.scaleEffect(on ? 1.06 : 1) }
-                    }
-                    .buttonStyle(RingPress())
-                }
-                Spacer()
-                Button { s.closeMenu() } label: { Image(systemName: "xmark") }.buttonBorderShape(.circle)
-            }
-            .padding(.horizontal, 22).padding(.top, 18).padding(.bottom, 6)
-            (MenuTab(rawValue: model.tab) ?? .home).view
-                .frame(width: 860, height: 600)
-        }
-        .overlay(alignment: .bottom) {
-            if let n = model.notice {
-                HStack(spacing: 12) {
-                    Text(n).font(.callout)
-                    Button { model.notice = nil } label: { Image(systemName: "xmark") }.buttonBorderShape(.circle)
-                }
-                .padding(.horizontal, 20).padding(.vertical, 10)
-                .glassBackgroundEffect()
-                .padding(.bottom, 20)
-            }
-        }
-        .glassBackgroundEffect()
-        .opacity(s.menuOn ? 1 : 0)
     }
 }
 

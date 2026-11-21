@@ -218,12 +218,12 @@ final class AppModel {
 
     func playClosed() { playOpen = false; AppModel.nearWindow = false }
 
-    /// 메인 메뉴(하나뿐인 메뉴)를 그 탭으로 엶. 뜨면 팸 카드는 바로 닫힘.
-    /// 0.10.15: 함께하는 동안은 창(시스템이 곁에 낮고 기울게 둠) 대신 공간 안 메뉴판 — 팸 카드가 뜨던 자리에 같은 방식으로
+    /// 메인 메뉴(하나뿐인 메뉴 — 창)를 그 탭으로 엶. 뜨면 팸 카드는 바로 닫힘.
+    /// 0.11.1: 0.10.15 의 공간 안 메뉴판은 되돌림 — 0.5.1 에서 만들었다 0.6.0 에서 '새 메뉴 금지'로 없앤 것을 다시 만든 실수였음
+    /// (홈 탭이 안 눌리고 가로로 길어 닫을 수도 없었음). 창 자리는 visionOS 가 정함(정면·곁(utilityPanel)·다른 창 옆만 고를 수 있음)
     func showMain(tab t: Int, note: String? = nil) {
         if let note { notice = note }
         tab = t
-        if let s = session, !mainOpen { s.openMenu(); return }
         session?.closeCard()
         if !mainOpen { openMain?() }
     }

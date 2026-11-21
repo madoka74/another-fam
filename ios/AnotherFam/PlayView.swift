@@ -11,12 +11,10 @@ struct PlayView: View {
         RealityView { content, attachments in
             content.add(s.root)
             if let c = attachments.entity(for: "card") { s.attachCard(c) }
-            if let m = attachments.entity(for: "menu") { s.attachMenu(m) }
             if let t = attachments.entity(for: "toast") { s.attachToast(t) }
             s.updateSub = content.subscribe(to: SceneEvents.Update.self) { e in s.tick(Float(e.deltaTime)) }
         } attachments: {
             Attachment(id: "card") { StatusCard(s: s) }
-            Attachment(id: "menu") { MenuPanel(s: s) }
             Attachment(id: "toast") { ToastView(s: s) }
         }
         // 강아지를 바라보고 집으면 상태 카드
