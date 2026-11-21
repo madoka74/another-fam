@@ -441,6 +441,10 @@ struct Family: Codable, Equatable {
             return Catalog.personal(k) ? Own.key(k, main.key) : k
         }
         h.placed = main.placed.map(ren)
+        // 한 번도 함께하지 않은 팸: 입양 키트(물그릇·담요)를 처음 한 번 꺼내 둠 (예전엔 공간을 열 때 했음)
+        if main.placed.isEmpty && main.layout.isEmpty {
+            h.placed = ["bowl_water", "blanket"].map { Own.key($0, main.key) }
+        }
         for (k, v) in main.layout { h.layout[ren(k)] = v }
         h.poops = main.poops
         h.padUses = main.padUses
