@@ -6,9 +6,13 @@ import Foundation
 ///   0.10.7 까지 26배(6달)였음 — 초반에 너무 빨리 자라 1년으로 늘림 (PetState.rate 로 이미 키우던 팸의 나이는 그대로 이어 감)
 ///   13살이 되면 그 모습 그대로 머묾
 enum Sim {
+    /// 말티즈 기준 (종마다 다르면 Breed.rate·maxAge 를 씀 — 평균 수명이 현실 1년이 되게)
     static let ageRate: Double = 13
     static let maxAge: Double = 4745
+    /// 입양할 때마다 가족 지갑에 들어오는 포인트
     static let startPoints = 1500
+    /// 한 번에 키울 수 있는 팸 수 (성능 — 나중에 이 숫자만 바꾸면 됨)
+    static let maxPets = 3
     /// 포인트: 쓴 시간 6초에 1 (1분 10P, 15분 150P = 성견 이틀치 밥)
     static let secPerPoint: Double = 6
 }
@@ -87,8 +91,13 @@ enum Stage: Int, CaseIterable {
 }
 
 // MARK: - 팸 종류 (0.10.15): 새 팸(강아지·고양이·다른 동물)은 여기 한 줄과 그 몸(모델·움직임)만 더하면 보금자리에 나와 바로 입양·함께하기가 됨
-enum Kind: String {
+enum Kind: String, Codable {
     case dog                    // 몸·움직임·행동 = DogData/DogSkin/DogAnimator/Dog (말티즈 모델)
+    var title: String {
+        switch self {
+        case .dog: return "강아지"
+        }
+    }
 }
 
 struct Breed: Identifiable {
@@ -98,14 +107,58 @@ struct Breed: Identifiable {
     let icon: String
     let note: String            // 한 줄 소개 (카드)
     let about: String           // 보금자리에서 고르면 보이는 설명
+    let lifeYears: Double       // 평균 수명 — 이만큼이 현실 1년 (0.11.0)
+    /// 나이 빠르기: 현실 하루에 먹는 나이(일)
+    var rate: Double { lifeYears }
+    var maxAge: Double { lifeYears * 365 }
 }
 
 enum Breeds {
     static let all: [Breed] = [
         Breed(id: "maltese", name: "말티즈", kind: .dog, icon: "dog.fill", note: "희고 작은 친구 · 다 자라면 3kg",
-              about: "하얀 털이 보송한 작은 강아지예요. 사람을 좋아하고 애교가 많아 곁에 붙어 있기를 좋아해요. 갓 태어난 아기로 와서 13살까지 자라요"),
+              about: "하얀 털이 보송한 작은 강아지예요. 사람을 좋아하고 애교가 많아 곁에 붙어 있기를 좋아해요. 갓 태어난 아기로 와서 13살까지 자라요",
+              lifeYears: 13),
     ]
     static func of(_ id: String) -> Breed { all.first { $0.id == id } ?? all[0] }
+}
+
+/// 팸마다 따로 쓰는 물건의 열쇠: "bowl_food:ab12cd" (물건:팸 열쇠). 공용 물건은 물건 이름 그대로 (0.11.0)
+enum Own {
+    static func key(_ item: String, _ pk: String) -> String { item + ":" + pk }
+    static func item(_ key: String) -> String { key.split(separator: ":", maxSplits: 1).first.map(String.init) ?? key }
+    static func pet(_ key: String) -> String? {
+        let parts = key.split(separator: ":", maxSplits: 1)
+        return parts.count == 2 ? String(parts[1]) : nil
+    }
+}
+
+/// 가족 살림 (0.11.0): 포인트·보관함·꺼내 둔 물건과 자리·바닥의 똥·패드 — 팸 모두가 함께 씀.
+/// 팸마다 따로 쓰는 물건(그릇·잠자리·줄·젖병)은 열쇠에 팸 열쇠가 붙음 (Own)
+struct Household: Codable, Equatable {
+    var points = 0
+    var pointFrac: Double = 0
+    var usedSec: Double = 0
+    var inv: [String: Int] = [:]
+    var placed: [String] = []
+    var layout: [String: [Float]] = [:]
+    var poops = 0
+    var padUses = 0
+
+    init() {}
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        func g<T: Decodable>(_ k: CodingKeys, _ def: T) -> T { (try? c.decodeIfPresent(T.self, forKey: k)) ?? def }
+        points = g(.points, 0); pointFrac = g(.pointFrac, 0); usedSec = g(.usedSec, 0)
+        inv = g(.inv, [:]); placed = g(.placed, []); layout = g(.layout, [:]); poops = g(.poops, 0); padUses = g(.padUses, 0)
+    }
+
+    func has(_ k: String) -> Bool { (inv[k] ?? 0) > 0 }
+    func count(_ k: String) -> Int { inv[k] ?? 0 }
+    mutating func use(_ k: String, _ n: Int = 1) -> Bool {
+        guard count(k) >= n else { return false }
+        inv[k] = count(k) - n
+        return true
+    }
 }
 
 /// 이름 뒤 토씨: 받침 있는 이름은 부를 때 '이'를 붙임 (깨몽 → 깨몽이와, 몽이 → 몽이와)
@@ -152,6 +205,28 @@ struct PetState: Codable, Equatable {
 
     init() {}
 
+    /// 팸 열쇠 (물건 열쇠·자리 열쇠에 붙는 짧은 이름표)
+    var key: String { String(id.replacingOccurrences(of: "-", with: "").lowercased().prefix(6)) }
+    var breed: Breed { Breeds.of(species) }
+    var maxAge: Double { breed.maxAge }
+    /// 이 팸 몫으로 보이는 살림: 공용 물건 + 이 팸 물건(열쇠를 떼고) — 화면·알림 셈(NeedInfo·Forecast·catchUp)이 예전처럼 has("bowl_food") 로 볼 수 있게
+    func with(_ h: Household) -> PetState {
+        var p = self
+        var inv: [String: Int] = [:]
+        for (k, v) in h.inv {
+            if let pk = Own.pet(k) { if pk == key { inv[Own.item(k)] = v } } else { inv[k] = v }
+        }
+        p.inv = inv
+        p.placed = h.placed.compactMap { k in
+            if let pk = Own.pet(k) { return pk == key ? Own.item(k) : nil }
+            return k
+        }
+        p.points = h.points
+        p.poops = h.poops
+        p.padUses = h.padUses
+        return p
+    }
+
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         func g<T: Decodable>(_ k: CodingKeys, _ def: T) -> T { (try? c.decodeIfPresent(T.self, forKey: k)) ?? def }
@@ -171,17 +246,19 @@ struct PetState: Codable, Equatable {
         // 나이 빠르기가 바뀜(0.10.8: 26배 → 13배): 지금 나이는 그대로 두고 그 나이가 되는 born 으로 옮김
         // (그대로 두면 이미 키우던 팸의 나이가 절반으로 줄어 다시 젖병을 먹는 아기가 됨)
         let r = g(.rate, 26.0)
-        if r != Sim.ageRate {
+        let br = Breeds.of(species)
+        if r != br.rate {
             let now = Date().timeIntervalSince1970
-            let a = min(Sim.maxAge, max(0, (now - born) / 86400 * r))
-            born = now - a / Sim.ageRate * 86400
+            let a = min(br.maxAge, max(0, (now - born) / 86400 * r))
+            born = now - a / br.rate * 86400
         }
-        rate = Sim.ageRate
+        rate = br.rate
     }
 
-    // MARK: 나이
+    // MARK: 나이 — 종마다 평균 수명이 현실 1년 (말티즈 13년 → 현실 하루에 13일)
     func age(_ now: Double = Date().timeIntervalSince1970) -> Double {
-        min(Sim.maxAge, max(0, (now - born) / 86400 * Sim.ageRate))
+        let b = breed
+        return min(b.maxAge, max(0, (now - born) / 86400 * b.rate))
     }
     var stage: Stage { Stage.of(age()) }
 
@@ -276,24 +353,106 @@ struct PetState: Codable, Equatable {
     }
 }
 
-/// 우리 집 팸들 (0.10.15): 여러 팸을 입양해 키움. 공간에는 한 번에 한 팸만 나와 함께함(active).
-/// 팸마다 욕구·나이·재주·보관함·포인트·꺼내 둔 물건 자리를 따로 가짐 (나머지 탭은 함께하는 팸 것을 보여 줌)
+/// 우리 집 팸들 (0.10.15 → 0.11.0): 입양한 팸(최대 Sim.maxPets)과 가족 살림(home).
+/// 0.11.0 부터 '함께하기'를 누르면 모든 팸이 함께 나옴. active 는 메뉴에서 먼저 보여 줄 팸
 struct Family: Codable, Equatable {
     var pets: [PetState] = []
     var active = ""
+    var home = Household()
+    var rel: [String: Float] = [:]          // 팸 둘 사이 사이 좋음 (−1 앙숙 ~ 1 단짝). 열쇠 = 두 팸 열쇠를 정렬해 '|'
+    var v = 2                               // 2 = 가족 살림 (0.11.0)
 
     init() {}
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         pets = (try? c.decodeIfPresent([PetState].self, forKey: .pets)) ?? []
         active = (try? c.decodeIfPresent(String.self, forKey: .active)) ?? ""
+        home = (try? c.decodeIfPresent(Household.self, forKey: .home)) ?? Household()
+        rel = (try? c.decodeIfPresent([String: Float].self, forKey: .rel)) ?? [:]
+        let ver = (try? c.decodeIfPresent(Int.self, forKey: .v)) ?? 1
+        if ver < 2 { migrate() }
+        v = 2
     }
 
     var current: PetState? { pets.first { $0.id == active } ?? pets.first }
     func pet(_ id: String) -> PetState? { pets.first { $0.id == id } }
+    func petByKey(_ k: String) -> PetState? { pets.first { $0.key == k } }
+    /// 이 팸 몫으로 보이는 상태 (공용 살림 + 이 팸 물건)
+    func view(_ p: PetState) -> PetState { p.with(home) }
+    var full: Bool { pets.count >= Sim.maxPets }
 
     mutating func put(_ p: PetState) {
         if let i = pets.firstIndex(where: { $0.id == p.id }) { pets[i] = p } else { pets.append(p) }
+    }
+
+    static func pair(_ a: String, _ b: String) -> String { a < b ? a + "|" + b : b + "|" + a }
+    func relation(_ a: String, _ b: String) -> Float { rel[Family.pair(a, b)] ?? 0.1 }
+
+    /// 공간에 나와 있지 않은 동안 흐른 시간: 팸마다 셈하되 패드·똥·패드 재고는 함께 씀
+    mutating func catchUp(_ now: Double = Date().timeIntervalSince1970, except: Set<String> = []) {
+        for i in pets.indices where !except.contains(pets[i].id) {
+            var v = pets[i].with(home)
+            v.catchUp(now)
+            home.padUses = v.padUses
+            home.poops = v.poops
+            home.inv["pad"] = v.inv["pad"]
+            pets[i] = v
+        }
+    }
+
+    /// 입양: 가족 지갑에 1,500P + 이 팸의 입양 키트(물그릇·담요, 이름 붙음)
+    mutating func adopt(_ p: PetState) {
+        pets.append(p)
+        home.points += Sim.startPoints
+        for it in ["bowl_water", "blanket"] {
+            let k = Own.key(it, p.key)
+            home.inv[k] = 1
+            if !home.placed.contains(k) { home.placed.append(k) }
+        }
+    }
+
+    /// 헤어짐: 그 팸과 그 팸 물건(이름 붙은 것)·자리를 지움. 공용 살림은 그대로
+    mutating func remove(_ id: String) {
+        guard let p = pet(id) else { return }
+        pets.removeAll { $0.id == id }
+        let mine = { (k: String) in Own.pet(k) == p.key }
+        home.inv = home.inv.filter { !mine($0.key) }
+        home.placed.removeAll(where: mine)
+        home.layout = home.layout.filter { !mine($0.key) }
+        rel = rel.filter { !$0.key.contains(p.id) }
+        if active == id { active = pets.first?.id ?? "" }
+    }
+
+    /// 0.10.15 까지(팸마다 살림을 따로 가짐) → 가족 살림 하나로: 포인트는 모두 더하고, 따로 쓰는 물건은 팸 이름을 붙이고,
+    /// 공용 물건은 개수를 더함. 꺼내 둔 물건·자리는 고른 팸(active) 것을 씀
+    mutating func migrate() {
+        guard !pets.isEmpty else { return }
+        var h = Household()
+        let main = current ?? pets[0]
+        for p in pets {
+            h.points += p.points
+            h.usedSec += p.usedSec
+            for (k, n) in p.inv where n > 0 {
+                if Catalog.personal(k) { h.inv[Own.key(k, p.key)] = 1 } else { h.inv[k, default: 0] += n }
+            }
+        }
+        let ren = { (k: String) -> String in
+            if k == "_dog" { return "_dog:" + main.key }
+            return Catalog.personal(k) ? Own.key(k, main.key) : k
+        }
+        h.placed = main.placed.map(ren)
+        for (k, v) in main.layout { h.layout[ren(k)] = v }
+        h.poops = main.poops
+        h.padUses = main.padUses
+        home = h
+        // 물건 고정점 목록도 같은 열쇠로 (0.10.15 의 팸마다 목록, 그 전의 한 목록)
+        let ud = UserDefaults.standard
+        if ud.dictionary(forKey: "af.anchors.home") == nil,
+           let pins = (ud.dictionary(forKey: "af.anchors." + main.id) ?? ud.dictionary(forKey: "af.anchors")) as? [String: String] {
+            var m: [String: String] = [:]
+            for (k, v) in pins { m[ren(k)] = v }
+            ud.set(m, forKey: "af.anchors.home")
+        }
     }
 
     /// 저장된 글 → 가족. 예전(0.10.14 까지) 한 마리 글이면 그 팸 하나뿐인 가족으로
@@ -304,6 +463,7 @@ struct Family: Codable, Equatable {
         var f = Family()
         f.pets = [p]
         f.active = p.id
+        f.migrate()
         return f
     }
 }
@@ -344,8 +504,7 @@ enum Store {
         }
         // 예전 한 마리 파일 → 가족으로 옮김 (지난 물건 고정점 목록도 그 팸 것으로)
         for name in ["pet.json", "pet.bak.json"] {
-            if let d = try? Foundation.Data(contentsOf: dir.appendingPathComponent(name)), let f = Family.decode(d), let p = f.current {
-                if let pins = UserDefaults.standard.dictionary(forKey: "af.anchors") { UserDefaults.standard.set(pins, forKey: "af.anchors." + p.id) }
+            if let d = try? Foundation.Data(contentsOf: dir.appendingPathComponent(name)), let f = Family.decode(d), f.current != nil {
                 family = f
                 write(f, force: false)
                 return f
@@ -426,6 +585,23 @@ struct Item: Identifiable {
     var ageMin: Double = 0
     var ageMax: Double = 99999
     var permanent: Bool { qty == 0 }
+    /// 팸마다 따로 쓰는 것 (이름표가 붙고, 살 때 어느 팸 것인지 고름) — 0.11.0
+    var personal: Bool { Catalog.personal(id) }
+    /// 쓸 수 있는 종류 (nil = 모두) · 품종 (nil = 그 종류 모두)
+    var kinds: [Kind]? { Catalog.kindsOf[id] }
+    var breeds: [String]? { Catalog.breedsOf[id] }
+    func fits(_ p: PetState) -> Bool {
+        if let k = kinds, !k.contains(p.breed.kind) { return false }
+        if let b = breeds, !b.contains(p.species) { return false }
+        return true
+    }
+    /// 쓰는 범위 이름 (메뉴 갈래 표시)
+    var scopeText: String {
+        if personal { return "개별" }
+        if let b = breeds { return b.map { Breeds.of($0).name }.joined(separator: "·") + " 전용" }
+        if let k = kinds { return k.map(\.title).joined(separator: "·") + " 전용" }
+        return "공용"
+    }
 }
 
 /// 값 기준 (1분 = 10P): 하루 15분(150P)이면 성견 이틀치 밥. 물은 무료(물그릇은 입양 키트).
@@ -472,7 +648,18 @@ enum Catalog {
         Item(id: "heartworm", name: "심장사상충 예방약", cat: .health, price: 220, qty: 1, unit: "달", icon: "heart.text.square.fill", note: "한 달에 한 번", ageMin: 56),
         Item(id: "probiotic", name: "유산균", cat: .health, price: 180, qty: 10, unit: "회", icon: "leaf.circle.fill", note: "장 건강 · 건강 조금", ageMin: 42),
     ]
-    static func item(_ id: String) -> Item? { items.first { $0.id == id } }
+    static func item(_ id: String) -> Item? { let i = Own.item(id); return items.first { $0.id == i } }
+    /// 팸마다 따로 쓰는 물건 (0.11.0): 그릇·잠자리·줄·젖병 — 이름표가 붙음
+    static let personalIds: Set<String> = ["bowl_food", "bowl_water", "bed", "blanket", "cushion", "leash", "bottle"]
+    static func personal(_ id: String) -> Bool { personalIds.contains(Own.item(id)) }
+    /// 종류 전용 (그 밖은 모두 공용): 사료·분유·간식·개껌·강아지 줄
+    static let kindsOf: [String: [Kind]] = {
+        var m: [String: [Kind]] = [:]
+        for id in ["formula", "food_puppy", "food_adult", "food_adult_l", "food_senior", "food_salmon", "treat", "jerky", "cheese", "dental",
+                   "chewbone", "antler", "leash"] { m[id] = [.dog] }
+        return m
+    }()
+    static let breedsOf: [String: [String]] = [:]
     /// 젖떼기: 이 나이(생후 5주)부터는 젖병을 먹지 않음 (분유는 4주까지, 3~5주는 젖병과 사료를 함께)
     static let weanAge: Double = 35
     /// 공간에 꺼내 놓는 것
@@ -482,7 +669,7 @@ enum Catalog {
     /// 같은 방식으로 쓰는 물건의 바탕 종류 (0.10.7 새 물건): 생김새는 저마다, 강아지와 노는 방식은 바탕 물건과 같음
     static let baseOf: [String: String] = ["jerky": "treat", "cheese": "treat", "ball_mini": "ball", "frisbee": "ball", "squeak_ball": "squeak",
                                            "rope_ring": "rope", "antler": "chewbone", "cushion": "blanket"]
-    static func base(_ id: String) -> String { baseOf[id] ?? id }
+    static func base(_ id: String) -> String { let i = Own.item(id); return baseOf[i] ?? i }
     /// 손으로 주는 간식 (사료 봉지로 붓는 것이 아님)
     static func isTreat(_ id: String) -> Bool { let b = base(id); return b == "treat" || b == "dental" }
     static func foodFor(_ age: Double) -> [String] {
@@ -585,7 +772,7 @@ enum NeedInfo {
             if age >= 35 {
                 let due = nextVaccine(p.vaccines)
                 if age >= due { a.append("예방 접종을 맞힐 때예요 (\(p.vaccines)번 맞음)") }
-                else { a.append("다음 접종 \(PetState.ageText(due)) · \(later((due - age) / Sim.ageRate * 86400))") }
+                else { a.append("다음 접종 \(PetState.ageText(due)) · \(later((due - age) / p.breed.rate * 86400))") }
             }
             if age >= 180 && (p.checkupAge < 0 || age - p.checkupAge >= 365) { a.append("건강 검진을 받을 때예요") }
             return a.joined(separator: " · ")

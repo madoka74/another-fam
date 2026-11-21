@@ -86,7 +86,7 @@ enum MenuTab: Int, Identifiable {
         }
     }
     @MainActor var view: AnyView {
-        if self != .adopt && AppModel.shared.pet == nil { return AnyView(NoPetView()) }
+        if self != .adopt && AppModel.shared.family.pets.isEmpty { return AnyView(NoPetView()) }
         switch self {
         case .adopt: return AnyView(AdoptTab())
         case .home: return AnyView(HomeTab())
@@ -170,7 +170,9 @@ struct AdoptTab: View {
             VStack(spacing: 24) {
                 VStack(spacing: 6) {
                     Text("보금자리").font(.extraLargeTitle)
-                    Text(model.family.pets.isEmpty ? "가족을 기다리는 팸들이에요" : "우리 집 팸 \(model.family.pets.count) · 새 가족을 더 맞이할 수 있어요")
+                    Text(model.family.pets.isEmpty ? "가족을 기다리는 팸들이에요"
+                         : (model.family.full ? "우리 집 팸 \(model.family.pets.count) · 지금은 \(Sim.maxPets)마리까지 함께 키울 수 있어요"
+                            : "우리 집 팸 \(model.family.pets.count) · 새 가족을 더 맞이할 수 있어요 (\(Sim.maxPets)마리까지)"))
                         .font(.title3).foregroundStyle(.secondary)
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 16)], spacing: 16) {
@@ -208,6 +210,8 @@ struct AdoptTab: View {
                     Text("\(b.name) 입양하기").font(.title3.weight(.semibold)).padding(.horizontal, 36).padding(.vertical, 8)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(model.family.full)
+                Text("입양할 때마다 가족 지갑에 \(Sim.startPoints)P와 이 팸 이름이 붙은 물그릇·담요가 들어와요").font(.footnote).foregroundStyle(.secondary)
             }
             .padding(36)
             .frame(maxWidth: .infinity)
@@ -216,162 +220,156 @@ struct AdoptTab: View {
 }
 
 // MARK: - 홈
-/// 우리 집 팸들 가운데 함께할 팸을 고름 (둘 이상일 때 위에 줄로). 고른 팸의 상태와 '함께하기'.
-/// 함께하는 중에 다른 팸을 고르면 그 팸의 상태를 보고 '바꿔 함께하기'로 지금 팸은 쉬고 그 팸과 함께함
+/// 우리 집 팸들의 상태 카드를 한 번에 (0.11.0). '함께하기'를 누르면 모든 팸이 함께 나옴. 산책은 팸마다
 struct HomeTab: View {
     private var model: AppModel { AppModel.shared }
-    @State private var info: (key: String, text: String)?
+    @State private var info: (pid: String, key: String, text: String)?
 
     var body: some View {
         let fam = model.family
-        if let p = model.menuSel.flatMap({ fam.pet($0) }) ?? model.pet {
-            let age = p.age()
-            let active = p.id == fam.active
-            let out = model.playOpen && active                     // 지금 공간에 나와 함께하는 팸
-            // 설정의 '함께한 날'과 같은 셈 (지난 날수, 소수 한 자리) — 0.7.0 은 '+1일째'로 세어 1일이 2일로 보였음
-            let days = ((Date().timeIntervalSince1970 - p.born) / 86400).formatted(.number.precision(.fractionLength(0...1)))
-            VStack(spacing: 22) {
-                if fam.pets.count > 1 { petRow(fam, sel: p.id) }
+        ScrollView {
+            VStack(spacing: 18) {
                 HStack(alignment: .firstTextBaseline, spacing: 14) {
-                    Text(p.name).font(.extraLargeTitle)
-                    Text(PetState.ageText(age)).font(.title2).foregroundStyle(.secondary)
-                    Text(p.stage.title).font(.callout).padding(.horizontal, 12).padding(.vertical, 4).background(.white.opacity(0.12), in: Capsule())
+                    Text("우리 집").font(.extraLargeTitle)
+                    Text("팸 \(fam.pets.count)").font(.title2).foregroundStyle(.secondary)
                     Spacer()
-                    Label("\(p.points)", systemImage: "p.circle.fill").font(.title2.weight(.semibold))
+                    Label("\(fam.home.points)", systemImage: "p.circle.fill").font(.title2.weight(.semibold))
                 }
-                ProgressView(value: min(1, age / Sim.maxAge)) { Text("함께한 지 \(days)일").font(.caption).foregroundStyle(.secondary) }
-                let items = Needs.list(p)
-                HStack(spacing: 22) {
-                    ForEach(0..<items.count, id: \.self) { i in
-                        let k = NeedInfo.key(items[i].0)
-                        Button { if info?.key == k { info = nil } else { info = (k, NeedInfo.text(p, k)) } } label: {
-                            NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 64, tappable: true)
-                        }
-                        .buttonStyle(RingPress())
-                    }
-                }
-                .padding(.vertical, 6)
-                if let info { Text(info.text).font(.title3).multilineTextAlignment(.center) }
                 HStack(spacing: 16) {
-                    if model.playOpen && !active {
-                        let cur = model.pet?.name ?? ""
-                        Button { model.switchPlay(to: p.id) } label: {
-                            Label("\(p.name)\(Josa.wa(p.name)) 함께하기", systemImage: "arrow.left.arrow.right")
-                                .font(.title3.weight(.semibold)).frame(minWidth: 240, minHeight: 44)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        Text("\(cur)\(Josa.batchim(cur) ? "이는" : "는") 쉬러 가요").font(.callout).foregroundStyle(.secondary)
-                    } else {
-                        Button { model.playOpen ? model.rest() : model.play() } label: {
-                            Label(model.playOpen ? "쉬기" : "함께하기", systemImage: model.playOpen ? "house.fill" : "pawprint.fill")
-                                .font(.title3.weight(.semibold)).frame(width: 220, height: 44)
-                        }
-                        .buttonStyle(.borderedProminent)
+                    Button { model.playOpen ? model.rest() : model.play() } label: {
+                        Label(model.playOpen ? "팸들 쉬기" : "팸들과 함께하기", systemImage: model.playOpen ? "house.fill" : "pawprint.fill")
+                            .font(.title3.weight(.semibold)).frame(minWidth: 240, minHeight: 44)
                     }
-                    if out && p.has("leash") && age >= 70 {
-                        Button {
-                            guard let s = model.session else { model.notice = "먼저 '함께하기'를 눌러 주세요"; return }
-                            s.setWalking(!s.walking)
-                        } label: {
-                            Label(model.session?.walking == true ? "산책 끝" : "산책", systemImage: "figure.walk").font(.title3).frame(width: 160, height: 44)
-                        }
-                        Text("오늘 \(Int(p.walkM))m").font(.callout).foregroundStyle(.secondary)
+                    .buttonStyle(.borderedProminent)
+                    if !fam.full {
+                        Button { model.tab = MenuTab.adopt.rawValue } label: { Label("보금자리", systemImage: "plus").frame(minHeight: 44) }
                     }
+                    Spacer()
                 }
-                if p.asleep { Label("자는 중", systemImage: "zzz").foregroundStyle(.secondary) }
-                Spacer(minLength: 0)
+                ForEach(fam.pets, id: \.id) { p in petCard(fam.view(p)) }
             }
-            .padding(36)
-            .onChange(of: p.id) { _, _ in info = nil }
+            .padding(32)
         }
     }
 
-    /// 우리 집 팸들: 이름·나이 카드. 지금 함께하는 팸에는 표시
-    private func petRow(_ fam: Family, sel: String) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(fam.pets, id: \.id) { q in
-                    let on = q.id == sel
-                    Button { model.select(q.id) } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: Breeds.of(q.species).icon).font(.title3)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(q.name).font(.headline)
-                                Text(q.id == fam.active && model.playOpen ? "함께하는 중" : PetState.ageText(q.age()))
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.horizontal, 16).padding(.vertical, 9)
-                        .background(.white.opacity(on ? 0.24 : 0.08), in: Capsule())
-                        .overlay(Capsule().stroke(.white.opacity(on ? 0.55 : 0), lineWidth: 1.5))
-                        // 고리·재주 단추와 같은 바라보기 효과
-                        .contentShape(.hoverEffect, Capsule())
-                        .hoverEffect(.highlight)
-                        .hoverEffect(isEnabled: true) { e, on, _ in e.scaleEffect(on ? 1.06 : 1) }
+    /// 팸 하나: 이름·나이·시기, 고리 8개(누르면 그 욕구 안내), 산책
+    private func petCard(_ p: PetState) -> some View {
+        let age = p.age()
+        let days = ((Date().timeIntervalSince1970 - p.born) / 86400).formatted(.number.precision(.fractionLength(0...1)))
+        let items = Needs.list(p)
+        let walkingMe = model.session?.walkPid == p.id
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: p.breed.icon).font(.title2)
+                Text(p.name).font(.title.weight(.bold))
+                Text(PetState.ageText(age)).font(.title3).foregroundStyle(.secondary)
+                Text(p.breed.name + " · " + p.stage.title).font(.callout).padding(.horizontal, 10).padding(.vertical, 3).background(.white.opacity(0.12), in: Capsule())
+                if p.asleep { Label("자는 중", systemImage: "zzz").font(.callout).foregroundStyle(.secondary) }
+                Spacer()
+                Text("함께한 지 \(days)일").font(.caption).foregroundStyle(.secondary)
+            }
+            ProgressView(value: min(1, age / p.maxAge))
+            HStack(spacing: 18) {
+                ForEach(0..<items.count, id: \.self) { i in
+                    let k = NeedInfo.key(items[i].0)
+                    Button {
+                        if info?.pid == p.id && info?.key == k { info = nil } else { info = (p.id, k, NeedInfo.text(p, k)) }
+                    } label: {
+                        NeedRing(label: items[i].0, icon: items[i].1, value: items[i].2, size: 52, tappable: true)
                     }
                     .buttonStyle(RingPress())
                 }
-                Button { model.tab = MenuTab.adopt.rawValue } label: {
-                    Label("보금자리", systemImage: "plus").font(.callout.weight(.medium))
-                        .padding(.horizontal, 16).padding(.vertical, 14)
-                        .background(.white.opacity(0.05), in: Capsule())
-                        .contentShape(.hoverEffect, Capsule())
-                        .hoverEffect(.highlight)
-                        .hoverEffect(isEnabled: true) { e, on, _ in e.scaleEffect(on ? 1.06 : 1) }
+                Spacer(minLength: 0)
+                if p.has("leash") && age >= 70 {
+                    VStack(spacing: 4) {
+                        Button {
+                            guard let s = model.session else { model.notice = "먼저 '팸들과 함께하기'를 눌러 주세요"; return }
+                            s.setWalking(p.id, !walkingMe)
+                        } label: {
+                            Label(walkingMe ? "산책 끝" : "산책", systemImage: "figure.walk").frame(minWidth: 110, minHeight: 40)
+                        }
+                        Text("오늘 \(Int(p.walkM))m").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
-                .buttonStyle(RingPress())
             }
-            .padding(.vertical, 6).padding(.horizontal, 4)
+            if let info, info.pid == p.id { Text(info.text).font(.callout).fixedSize(horizontal: false, vertical: true) }
         }
+        .padding(20)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 24))
     }
 }
 
 // MARK: - 상점
+/// 가족 지갑으로 삼. 물건마다 쓰는 범위 표시(개별·종류 전용·공용). 개별 물건은 어느 팸 것인지 골라 삼 (이름이 붙음)
 struct ShopTab: View {
     @State private var cat: ItemCat = .food
     private var model: AppModel { AppModel.shared }
 
     var body: some View {
-        if let p = model.pet {
-            let age = p.age()
-            VStack(spacing: 16) {
-                HStack {
-                    Picker("", selection: $cat) {
-                        ForEach(ItemCat.allCases, id: \.self) { c in Text(c.rawValue).tag(c) }
-                    }
-                    .pickerStyle(.segmented)
-                    Label("\(p.points)", systemImage: "p.circle.fill").font(.title3.weight(.semibold)).frame(width: 130, alignment: .trailing)
+        let fam = model.family
+        VStack(spacing: 16) {
+            HStack {
+                Picker("", selection: $cat) {
+                    ForEach(ItemCat.allCases, id: \.self) { c in Text(c.rawValue).tag(c) }
                 }
-                ScrollView {
-                    VStack(spacing: 10) {
-                        ForEach(Catalog.items.filter { $0.cat == cat && $0.price > 0 }) { it in
-                            let fits = age >= it.ageMin - 14 && age <= it.ageMax
-                            HStack(spacing: 14) {
-                                Image(systemName: it.icon).font(.title2).frame(width: 44)
-                                VStack(alignment: .leading, spacing: 2) {
+                .pickerStyle(.segmented)
+                Label("\(fam.home.points)", systemImage: "p.circle.fill").font(.title3.weight(.semibold)).frame(width: 130, alignment: .trailing)
+            }
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(Catalog.items.filter { $0.cat == cat && $0.price > 0 }) { it in
+                        let who = fam.pets.filter { it.fits($0) }
+                        let fits = who.contains { $0.age() >= it.ageMin - 14 && $0.age() <= it.ageMax }
+                        HStack(spacing: 14) {
+                            Image(systemName: it.icon).font(.title2).frame(width: 44)
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 8) {
                                     Text(it.name + (it.permanent ? "" : " \(it.qty)\(it.unit)")).font(.headline)
-                                    Text(it.note).font(.caption).foregroundStyle(.secondary)
+                                    ScopeBadge(it)
                                 }
-                                Spacer()
-                                if p.count(it.id) > 0 {
-                                    Text(it.permanent ? "있음" : "\(p.count(it.id))\(it.unit)").font(.callout).foregroundStyle(.secondary)
+                                Text(it.note).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if it.personal {
+                                // 팸마다: 이미 있으면 '있음', 없으면 그 팸 이름으로 사기
+                                ForEach(who, id: \.id) { p in
+                                    let have = fam.home.has(Own.key(it.id, p.key))
+                                    Button { model.buy(it, for: p.key) } label: { Text(have ? "\(p.name) 있음" : "\(p.name) \(it.price)").frame(minWidth: 84) }
+                                        .disabled(!model.canBuy(it, for: p.key))
+                                }
+                            } else {
+                                if fam.home.count(it.id) > 0 {
+                                    Text(it.permanent ? "있음" : "\(fam.home.count(it.id))\(it.unit)").font(.callout).foregroundStyle(.secondary)
                                 }
                                 Button { model.buy(it) } label: { Text("\(it.price)").frame(width: 70) }
-                                    .disabled(!model.canBuy(it))
+                                    .disabled(!model.canBuy(it) || who.isEmpty)
                             }
-                            .padding(.horizontal, 18).padding(.vertical, 10)
-                            .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
-                            .opacity(fits ? 1 : 0.45)
                         }
+                        .padding(.horizontal, 18).padding(.vertical, 10)
+                        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
+                        .opacity(fits ? 1 : 0.45)
                     }
                 }
             }
-            .padding(32)
         }
+        .padding(32)
+    }
+}
+
+/// 쓰는 범위 표시: 개별(이름표) · ○○ 전용 · 공용
+struct ScopeBadge: View {
+    let it: Item
+    init(_ it: Item) { self.it = it }
+    var body: some View {
+        Text(it.scopeText)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 8).padding(.vertical, 2)
+            .background((it.personal ? Color.orange : (it.kinds != nil || it.breeds != nil ? Color.blue : Color.gray)).opacity(0.3), in: Capsule())
     }
 }
 
 // MARK: - 보관함
+/// 위: 공용 살림(상점과 같은 갈래). 아래: 팸마다 따로 쓰는 물건(이름 붙은 그릇·잠자리·줄·젖병) — 0.11.0
 struct StorageTab: View {
     private var model: AppModel { AppModel.shared }
     private static let instant: Set<String> = ["vaccine", "checkup", "joint", "wipes", "toothpaste", "heartworm", "probiotic"]
@@ -381,79 +379,111 @@ struct StorageTab: View {
     @State private var cat: ItemCat = .food
 
     var body: some View {
-        if let p = model.pet {
-            let all = Catalog.items.filter { p.count($0.id) > 0 || model.session?.isOut($0.id) == true }
-            let own = all.filter { $0.cat == cat }
-            let jug = cat == .food && model.session != nil && p.age() >= 21
-            VStack(spacing: 16) {
-                Picker("", selection: $cat) {
-                    ForEach(ItemCat.allCases, id: \.self) { c in
-                        let n = all.filter { $0.cat == c }.count + (c == .food && model.session != nil && p.age() >= 21 ? 1 : 0)
-                        Text(n > 0 ? "\(c.rawValue) \(n)" : c.rawValue).tag(c)
-                    }
+        let fam = model.family
+        let h = fam.home
+        let shared = Catalog.items.filter { !$0.personal && (h.count($0.id) > 0 || model.session?.isOut($0.id) == true) }
+        let own = shared.filter { $0.cat == cat }
+        let grown = fam.pets.contains { $0.age() >= 21 }
+        let jug = cat == .food && model.session != nil && grown
+        VStack(spacing: 16) {
+            Picker("", selection: $cat) {
+                ForEach(ItemCat.allCases, id: \.self) { c in
+                    let n = shared.filter { $0.cat == c }.count + (c == .food && model.session != nil && grown ? 1 : 0)
+                    Text(n > 0 ? "\(c.rawValue) \(n)" : c.rawValue).tag(c)
                 }
-                .pickerStyle(.segmented)
-                ScrollView {
-                    VStack(spacing: 10) {
-                        ForEach(own) { it in
-                            let (a, b) = buttons(it, p)
-                            row(it.icon, it.name, it.permanent ? "" : "\(p.count(it.id))\(it.unit)", a, b)
+            }
+            .pickerStyle(.segmented)
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(own) { it in
+                        let (a, b) = buttons(it.id, it)
+                        row(it.icon, it.name, it.permanent ? "" : "\(h.count(it.id))\(it.unit)", it, a, b)
+                    }
+                    // 물병: 물은 공짜라 보관함 물건이 아니지만 꺼내고 넣을 수 있어야 함 — 사료 바로 아래
+                    if jug {
+                        let out = model.session?.isOut("jug") == true
+                        row("waterbottle.fill", "물병", "", nil, out ? nil : take("jug", true), out ? put("jug") : nil)
+                    }
+                    if own.isEmpty && !jug { Text("이 갈래엔 아직 공용 물건이 없어요").foregroundStyle(.secondary).padding(24) }
+                    // 팸마다 따로 쓰는 물건
+                    ForEach(fam.pets, id: \.id) { p in
+                        let mine = Catalog.items.filter { $0.personal && (h.has(Own.key($0.id, p.key)) || model.session?.isOut(Own.key($0.id, p.key)) == true) }
+                        if !mine.isEmpty {
+                            HStack {
+                                Label("\(p.name) 것", systemImage: p.breed.icon).font(.headline).foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                            .padding(.top, 10)
+                            ForEach(mine) { it in
+                                let k = Own.key(it.id, p.key)
+                                let (a, b) = buttons(k, it)
+                                row(it.icon, "\(p.name) " + it.name, "", it, a, b)
+                            }
                         }
-                        // 물병: 물은 공짜라 보관함 물건이 아니지만 꺼내고 넣을 수 있어야 함 — 사료 바로 아래
-                        if jug {
-                            let out = model.session?.isOut("jug") == true
-                            row("waterbottle.fill", "물병", "", out ? nil : take("jug", true), out ? put("jug") : nil)
-                        }
-                        if own.isEmpty && !jug { Text("이 갈래엔 아직 없어요").foregroundStyle(.secondary).padding(40) }
                     }
                 }
             }
-            .padding(32)
         }
+        .padding(32)
     }
 }
 
 extension StorageTab {
     struct Act { let title: String; let on: Bool; let run: () -> Void }
 
-    /// 단추 두 칸: 왼쪽 칸은 늘 '꺼내기'·'쓰기', 오른쪽 칸은 늘 '넣기' — 같은 글자는 같은 자리, 단추 크기는 모두 같게 (0.10.1)
-    func buttons(_ it: Item, _ p: PetState) -> (Act?, Act?) {
+    /// 단추 두 칸: 왼쪽 칸은 늘 '꺼내기'·'쓰기', 오른쪽 칸은 늘 '넣기' — 같은 글자는 같은 자리, 단추 크기는 모두 같게 (0.10.1).
+    /// key = 보관함 열쇠 (공용 = 물건 이름, 개별 = 물건:팸)
+    func buttons(_ key: String, _ it: Item) -> (Act?, Act?) {
         let s = model.session
-        if StorageTab.instant.contains(it.id) { return (Act(title: "쓰기", on: true, run: { model.useNow(it.id) }), nil) }
+        let h = model.family.home
+        if StorageTab.instant.contains(it.id) { return (nil, nil) }          // 바로 쓰는 것은 줄 아래 팸 이름 단추로
         if it.id == "leash" || it.id == "formula" { return (nil, nil) }
         if it.cat == .food && !Catalog.isTreat(it.id) {
             // 사료: 사료 봉지를 손 앞에 꺼냄 / 꺼낸 봉지를 넣음
             let out = s?.isOut("foodbag") == true
-            return (out ? nil : take(it.id, p.count(it.id) > 0), out ? put(it.id) : nil)
+            return (out ? nil : take(key, h.count(key) > 0), out ? put(key) : nil)
         }
         if it.id == "pad" {
             // 패드: 새 한 장을 손 앞에 꺼냄 / 깔린 패드(와 손에 든 패드)를 걷어 넣음
             let held = s?.isOut("padsheet") == true
             let out = s?.isOut("pad") == true || held
-            return (take("pad", p.count("pad") > 0 && !held), out ? put("pad") : nil)
+            return (take("pad", h.count("pad") > 0 && !held), out ? put("pad") : nil)
         }
         if it.id == "bag" {
             let out = s?.isOut("bag") == true
-            return (out ? nil : take("bag", p.count("bag") > 0), out ? put("bag") : nil)
+            return (out ? nil : take("bag", h.count("bag") > 0), out ? put("bag") : nil)
         }
         if Catalog.placeable.contains(it.id) || StorageTab.handy.contains(Catalog.base(it.id)) {
-            let out = s?.isOut(it.id) == true
-            return (out ? nil : take(it.id, true), out ? put(it.id) : nil)
+            let out = s?.isOut(key) == true
+            return (out ? nil : take(key, true), out ? put(key) : nil)
         }
         return (nil, nil)
     }
 
-    func take(_ id: String, _ on: Bool) -> Act? { Act(title: "꺼내기", on: on, run: { model.takeOut(id) }) }
-    func put(_ id: String) -> Act? { Act(title: "넣기", on: true, run: { model.putBack(id) }) }
+    func take(_ key: String, _ on: Bool) -> Act? { Act(title: "꺼내기", on: on, run: { model.takeOut(key) }) }
+    func put(_ key: String) -> Act? { Act(title: "넣기", on: true, run: { model.putBack(key) }) }
 
-    func row(_ icon: String, _ name: String, _ count: String, _ a: Act?, _ b: Act?) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon).font(.title2).frame(width: 44)
-            Text(name).font(.headline)
-            Text(count).font(.callout).foregroundStyle(.secondary)
-            Spacer()
-            slot(a)
-            slot(b)
+    func row(_ icon: String, _ name: String, _ count: String, _ it: Item?, _ a: Act?, _ b: Act?) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 14) {
+                Image(systemName: icon).font(.title2).frame(width: 44)
+                Text(name).font(.headline)
+                if let it { ScopeBadge(it) }
+                Text(count).font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                slot(a)
+                slot(b)
+            }
+            // 바로 쓰는 것(접종·영양제·물티슈 등): 누구에게 쓸지 팸 이름 단추
+            if let it, StorageTab.instant.contains(it.id) {
+                HStack(spacing: 8) {
+                    Text("쓰기").font(.callout).foregroundStyle(.secondary).frame(width: 44)
+                    ForEach(model.family.pets.filter { it.fits($0) }, id: \.id) { p in
+                        Button(p.name) { model.useNow(it.id, pet: p.id) }.disabled(model.family.home.count(it.id) == 0)
+                    }
+                    Spacer()
+                }
+            }
         }
         .padding(.horizontal, 18).padding(.vertical, 10)
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
@@ -535,14 +565,14 @@ struct TrickChips: View {
 
 struct SettingsTab: View {
     @State private var volume: Double = UserDefaults.standard.object(forKey: "af.volume") as? Double ?? 0
-    @State private var askReset = false
-    @State private var entry = ""
+    @State private var askRemove: PetState?
     @State private var voice = VoiceEar.enabled
     private var model: AppModel { AppModel.shared }
 
     var body: some View {
         let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        let fam = model.family
         Form {
             Section("소리") {
                 HStack {
@@ -555,52 +585,27 @@ struct SettingsTab: View {
                     UserDefaults.standard.set(x, forKey: "af.volume")
                 }
             }
-            // 함께한 날: 화면 안 숫자판으로 바로 입력 (0.4.0 숫자 칸은 정확히 눌러야 했고, 0.5.0 슬라이더는 맞추기 어려웠고
-            // 단추는 폼 한 줄 안에 여럿이라 눌리지 않았음 — 한 줄에 단추가 여럿이면 모두 .bordered 로 따로 눌리게)
-            Section("시험 · 함께한 날") {
-                let val = min(Sim.maxAge / Sim.ageRate, Double(entry) ?? 0)
-                HStack(spacing: 24) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text((entry.isEmpty ? "0" : entry) + "일").font(.system(size: 44, weight: .semibold)).monospacedDigit()
-                        Text("강아지 나이 " + PetState.ageText(val * Sim.ageRate)).foregroundStyle(.secondary)
-                        Button("적용") { model.setTogetherDays(val); entry = val.formatted(.number.precision(.fractionLength(0...1))) }
-                            .buttonStyle(.borderedProminent).padding(.top, 6)
-                    }
-                    Spacer()
-                    Grid(horizontalSpacing: 10, verticalSpacing: 10) {
-                        ForEach([["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], [".", "0", "⌫"]], id: \.self) { row in
-                            GridRow {
-                                ForEach(row, id: \.self) { k in
-                                    Button { key(k) } label: {
-                                        Group { if k == "⌫" { Image(systemName: "delete.left") } else { Text(k) } }
-                                            .font(.title2.weight(.medium)).frame(width: 64, height: 44)
-                                    }
-                                    .buttonStyle(.bordered)
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(.vertical, 8)
-            }
-            // 말로 부르기·시키기: 간식으로 재주를 가르치며 말하면 그 말을 배움 (사람마다 다른 말도 각각)
+            // 말로 부르기·시키기: 간식으로 재주를 가르치며 말하면 그 말을 배움 (팸마다·사람마다 다른 말도 각각).
+            // 이름을 부르고 말하면 그 팸만, 이름 없이 말하면 모두가 들음 (0.11.0)
             Section("목소리") {
                 Toggle("말 알아듣기", isOn: Binding(get: { voice }, set: { voice = $0; VoiceEar.enabled = $0 }))
-                if let p = model.pet { TrickChips(pet: p) }
                 LabeledContent("최근 들은 말", value: VoiceEar.recent.isEmpty ? "없음" : VoiceEar.recent.prefix(5).joined(separator: " · "))
-                if let p = model.pet, p.words.values.allSatisfy({ ($0.values.max() ?? 0) < 0.2 }) {
-                    LabeledContent("배운 말", value: "아직 없음")
-                }
-                if let p = model.pet, !p.words.isEmpty {
+                Text("이름을 부른 뒤 말하면 그 팸만, 이름 없이 말하면 모두가 들어요").font(.footnote).foregroundStyle(.secondary)
+            }
+            // 팸마다 재주·배운 말 (한 화면에 모두)
+            ForEach(fam.pets, id: \.id) { p in
+                Section("\(p.name) · 재주와 배운 말") {
+                    TrickChips(pet: p)
                     let list = p.words.compactMap { w, m -> (String, String, Float)? in
                         guard let b = m.max(by: { $0.value < $1.value }), b.value >= 0.2 else { return nil }
                         return (w, Dog.trickTitle(b.key), b.value)
                     }.sorted { $0.2 > $1.2 }
+                    if list.isEmpty { LabeledContent("배운 말", value: "아직 없음") }
                     ForEach(list.prefix(20), id: \.0) { it in
                         // 잘못 배운 말은 지울 수 있게 (0.10.10) — 한 줄에 단추가 있으니 .borderless (줄 전체가 눌리지 않게)
                         HStack {
                             LabeledContent("'\(it.0)' → \(it.1)", value: "\(Int(it.2 * 100))%")
-                            Button(role: .destructive) { model.forgetWord(it.0) } label: { Label("지우기", systemImage: "trash").labelStyle(.iconOnly) }
+                            Button(role: .destructive) { model.forgetWord(it.0, pet: p.id) } label: { Label("지우기", systemImage: "trash").labelStyle(.iconOnly) }
                                 .buttonStyle(.borderless)
                                 .padding(.leading, 12)
                         }
@@ -608,35 +613,24 @@ struct SettingsTab: View {
                 }
             }
             Section("가족") {
-                // 여러 팸 (0.10.15): 지금 고른 팸과만 헤어짐 — 다른 팸들은 그대로
-                Button("\(model.pet?.name ?? "")\(Josa.wa(model.pet?.name ?? "")) 헤어지기", role: .destructive) { askReset = true }
-                    .disabled(model.playOpen || model.pet == nil)
+                ForEach(fam.pets, id: \.id) { p in
+                    // 팸마다 따로 헤어질 수 있음 (그 팸 이름이 붙은 물건도 함께 정리). 함께하는 동안은 안 됨
+                    Button("\(p.name)\(Josa.wa(p.name)) 헤어지기", role: .destructive) { askRemove = p }
+                        .disabled(model.playOpen)
+                }
+                if fam.pets.isEmpty { Text("아직 가족이 없어요").foregroundStyle(.secondary) }
             }
             Section("정보") {
                 LabeledContent("버전", value: "\(v) (\(b))")
                 LabeledContent("만든 곳", value: "Blankish works")
             }
         }
-        .onAppear {
-            SoundBank.shared.master = volume
-            if let p = model.pet { entry = ((Date().timeIntervalSince1970 - p.born) / 86400).formatted(.number.precision(.fractionLength(0...1)).grouping(.never)) }
-        }
-        .confirmationDialog("\(model.pet?.name ?? "")\(Josa.wa(model.pet?.name ?? "")) 헤어질까요? 다른 팸들은 그대로예요.", isPresented: $askReset, titleVisibility: .visible) {
-            Button("헤어지기", role: .destructive) { model.reset() }
-            Button("취소", role: .cancel) {}
+        .onAppear { SoundBank.shared.master = volume }
+        .confirmationDialog(askRemove.map { "\($0.name)\(Josa.wa($0.name)) 헤어질까요? \($0.name) 이름이 붙은 물건도 함께 정리돼요. 다른 팸들은 그대로예요." } ?? "",
+                            isPresented: Binding(get: { askRemove != nil }, set: { if !$0 { askRemove = nil } }), titleVisibility: .visible) {
+            Button("헤어지기", role: .destructive) { if let p = askRemove { model.remove(p.id) }; askRemove = nil }
+            Button("취소", role: .cancel) { askRemove = nil }
         }
         .padding(24)
-    }
-
-    /// 숫자판 한 칸 (소수 한 자리까지, 최대 365일)
-    private func key(_ k: String) {
-        switch k {
-        case "⌫": if !entry.isEmpty { entry.removeLast() }
-        case ".": if !entry.contains(".") { entry = (entry.isEmpty ? "0" : entry) + "." }
-        default:
-            if let dot = entry.firstIndex(of: "."), entry.distance(from: dot, to: entry.endIndex) > 1 { return }
-            let next = entry == "0" ? k : entry + k
-            if (Double(next) ?? 0) <= Sim.maxAge / Sim.ageRate { entry = next }
-        }
     }
 }

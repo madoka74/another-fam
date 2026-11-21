@@ -21,7 +21,7 @@ struct PlayView: View {
         }
         // 강아지를 바라보고 집으면 상태 카드
         // 탭 자리를 함께 넘김: 손가락이 직접 닿은 탭(쓰다듬기)만 거르고, 바라보고 집은 탭은 가까이 있어도 받음 (0.10.0)
-        .gesture(SpatialTapGesture().targetedToEntity(where: .has(DogTag.self)).onEnded { v in s.tapDog(at: v.convert(v.location3D, from: .local, to: .scene)) })
+        .gesture(SpatialTapGesture().targetedToEntity(where: .has(DogTag.self)).onEnded { v in s.tapDog(v.entity, at: v.convert(v.location3D, from: .local, to: .scene)) })
         // 그릇·패드·치울 것: 바라보고 집으면 쓸 도구를 꺼내 주거나 하는 법을 알려 줌
         .simultaneousGesture(SpatialTapGesture().targetedToEntity(where: .has(PropTag.self)).onEnded { v in s.tapProp(v.entity, at: v.convert(v.location3D, from: .local, to: .scene)) })
         // 안고 있는 동안은 진짜 손이 강아지 위에 겹쳐 그려지지 않게 (손에 가려 강아지가 흐릿했음)
@@ -106,7 +106,7 @@ struct StatusCard: View {
     let s: PlaySession
 
     var body: some View {
-        let p = s.shown
+        let p = (s.shown.pet(s.cardPid) ?? s.shown.pets.first).map { s.shown.view($0) } ?? PetState()
         VStack(spacing: 16) {
             if s.cardOn {
                 HStack(spacing: 10) {

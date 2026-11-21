@@ -157,10 +157,13 @@ final class PhoneModel {
         var list: [PetState] = []
         var plan: [PlannedAlert] = []
         let t0 = Date().timeIntervalSince1970
+        // 지금까지 따라잡기 (팸마다, 패드·똥은 가족이 함께 씀 — 0.11.0)
+        var caught = fam
+        caught.catchUp()
         for saved in fam.pets {
             seen[saved.id] = saved.lastSim
-            var now = saved
-            now.catchUp()
+            guard let c = caught.pet(saved.id) else { continue }
+            var now = caught.view(c)
             if saved.together { now.together = true }
             list.append(now)
             // 비전에서 함께하는 동안은 그 팸의 폰 알림을 울리지 않음 (알릴 일은 비전 안에서). 비전 소식이 끊겨도 2시간 뒤부터는 다시 알림

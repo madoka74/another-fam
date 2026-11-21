@@ -78,11 +78,11 @@ final class VoiceEar {
     /// 알아듣기 쉽게 인식기에 미리 알려 줄 말 (재주 말·이름·배운 말)
     func hint(_ words: [String]) { worker.setHints(words) }
 
-    /// 강아지 이름 (소문자·띄어쓰기 없앰) — 한 번 말한 것을 낱말로 나눌 때 이름은 따로 떼어 냄
-    var name = ""
+    /// 팸 이름들 (소문자·띄어쓰기 없앰) — 한 번 말한 것을 낱말로 나눌 때 이름은 따로 떼어 냄 (0.11.0 여러 팸)
+    var names: [String] = []
 
     private func emit(_ t: String) {
-        for w in VoiceEar.utterance(t, name: name) {
+        for w in VoiceEar.utterance(t, names: names) {
             onWord?(w)
             VoiceEar.recent.insert(w, at: 0)
             if VoiceEar.recent.count > 8 { VoiceEar.recent.removeLast() }
@@ -96,10 +96,12 @@ final class VoiceEar {
     /// ① 두 글자 이상 낱말은 그대로 (지금까지 배운 말 그대로 알아들음)
     /// ② 한 글자 조각('안'·'자')은 버리고, 여러 낱말이 짧으면(이름 빼고 6자 이하) 붙인 말('안 자' → '안자')도 넘김
     /// ③ 같은 말 되풀이('엎드려 엎드려')는 한 번으로
-    static func utterance(_ t: String, name: String) -> [String] {
+    static func utterance(_ t: String, names: [String]) -> [String] {
         var ws = words(t)
         var out: [String] = []
-        if !name.isEmpty, let i = ws.firstIndex(where: { $0.contains(name) }) { out.append(ws.remove(at: i)) }
+        for name in names where !name.isEmpty {
+            if let i = ws.firstIndex(where: { $0.contains(name) }) { out.append(ws.remove(at: i)) }
+        }
         for w in ws where w.count >= 2 || single.contains(w) {
             let u = unrepeat(w)
             if !out.contains(u) { out.append(u) }

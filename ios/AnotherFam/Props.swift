@@ -33,6 +33,10 @@ final class Prop {
     /// 쓰는 방식이 같은 바탕 종류 (새 물건 0.10.7: 작은 고무공·원반 → "ball", 삑삑이 공 → "squeak", 링 터그 → "rope",
     /// 사슴뿔 → "chewbone", 육포·치즈 → "treat", 쿠션 매트 → "blanket"). 강아지 행동은 이것으로, 생김새·보관함 수는 id 로
     let base: String
+    /// 물건 종류 (팸 열쇠를 뗀 Catalog id) — 생김새는 이것으로 (0.11.0: 팸마다 따로 쓰는 물건은 id 가 "bowl_food:ab12cd")
+    let item: String
+    /// 따로 쓰는 물건의 주인 팸 열쇠 (공용이면 nil)
+    let owner: String?
     let uid = UUID().uuidString
     let kind: PropKind
     let entity = Entity()
@@ -77,11 +81,43 @@ final class Prop {
     private var dropPh: Float = 0
     var restAt: Double = 0
 
+    /// 따로 쓰는 물건에 주인 이름을 붙임 (0.11.0): 그릇은 바깥 앞쪽 벽, 잠자리는 앞 가장자리, 젖병은 옆
+    private var nameE: ModelEntity?
+    func setName(_ name: String) {
+        nameE?.removeFromParent()
+        let bg = UIColor(red: 0.98, green: 0.96, blue: 0.90, alpha: 1), fg = UIColor(red: 0.30, green: 0.22, blue: 0.16, alpha: 1)
+        var e: ModelEntity
+        switch base {
+        case "bowl_food", "bowl_water":
+            // 바깥 벽은 위로 갈수록 바깥으로 기욺 (높이 2.6cm 에서 반지름 7.6cm, 24°)
+            e = NameTag.plate(name, width: 0.056, height: 0.02, bg: bg, fg: fg)
+            e.position = SIMD3<Float>(0, 0.025, 0.0795)
+            e.orientation = simd_quatf(angle: 0.42, axis: SIMD3<Float>(1, 0, 0))
+        case "bed":
+            e = NameTag.plate(name, width: 0.09, height: 0.03, bg: bg, fg: fg)
+            e.position = SIMD3<Float>(0, 0.052, 0.276)
+        case "blanket":
+            // 담요·쿠션 매트: 앞쪽 가장자리 위에 눕혀
+            let top: Float = item == "cushion" ? 0.031 : 0.019
+            e = NameTag.plate(name, width: 0.09, height: 0.032, bg: bg, fg: fg)
+            e.position = SIMD3<Float>(0.15, top, 0.17)
+            e.orientation = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
+        case "bottle":
+            e = NameTag.plate(name, width: 0.03, height: 0.013, bg: bg, fg: fg)
+            e.position = SIMD3<Float>(0, 0.035, 0.0205)
+        default: return
+        }
+        entity.addChild(e)
+        nameE = e
+    }
+
     /// 그릇 안쪽 반지름 (높이 y 에서) — 바닥 r 0.060(높이 0.008) → 입구 r 0.077(높이 0.044)
     static func bowlR(_ y: Float) -> Float { 0.060 + max(0, min(1, (y - 0.008) / 0.036)) * 0.017 }
 
     init(_ id: String) {
         self.id = id
+        self.item = Own.item(id)
+        self.owner = Own.pet(id)
         self.base = Catalog.base(id)
         switch base {
         case "ball", "rope", "squeak", "chewbone", "blanky": kind = .toy
@@ -94,7 +130,7 @@ final class Prop {
         var shapes: [ShapeResource]?
         var mass: Float = 0.05
         var bounce: Float = 0.3
-        switch id {
+        switch item {
         // ---- 0.10.7 새 물건 (생김새) ----
         case "cushion":
             // 도톰한 누빔 쿠션 매트 (담요와 같은 크기, 3cm 두께)
@@ -131,7 +167,7 @@ final class Prop {
             add(.generateBox(width: 0.014, height: 0.014, depth: 0.014, cornerRadius: 0.002), Geo.mat(SIMD3<Float>(0.98, 0.82, 0.36), rough: 0.6))
             r = 0.04; mass = 0.006; bounce = 0.1
         case "bowl_food", "bowl_water":
-            let water = id == "bowl_water"
+            let water = item == "bowl_water"
             // 밥그릇 = 스테인리스(금속 광택), 물그릇 = 유약 바른 도자기. 둘 다 말린 입구 테두리 + 고무 받침
             let wall: [(Float, Float)] = [(0.066, 0.002), (0.069, 0.004), (0.079, 0.040), (0.084, 0.043), (0.085, 0.0465), (0.082, 0.049), (0.078, 0.047),
                                           (0.077, 0.044), (0.060, 0.008), (0, 0.006)]
@@ -241,8 +277,8 @@ final class Prop {
             add(.generateSphere(radius: 0.02), k, at: SIMD3<Float>(-0.085, 0, 0))
             r = 0.1; shape = .generateBox(size: SIMD3<Float>(0.21, 0.036, 0.036)); mass = 0.06; bounce = 0.15
         case "squeak", "chewbone", "antler":
-            let col = id == "squeak" ? SIMD3<Float>(0.35, 0.70, 0.86) : (id == "antler" ? SIMD3<Float>(0.56, 0.44, 0.32) : SIMD3<Float>(0.90, 0.84, 0.70))
-            let m = Geo.mat(col, rough: id == "squeak" ? 0.45 : 0.8)
+            let col = item == "squeak" ? SIMD3<Float>(0.35, 0.70, 0.86) : (item == "antler" ? SIMD3<Float>(0.56, 0.44, 0.32) : SIMD3<Float>(0.90, 0.84, 0.70))
+            let m = Geo.mat(col, rough: item == "squeak" ? 0.45 : 0.8)
             add(Geo.lathe([(0, -0.045), (0.009, -0.044), (0.009, 0.044), (0, 0.045)], seg: 12), m, rot: simd_quatf(angle: .pi / 2, axis: SIMD3<Float>(0, 0, 1)))
             for sx: Float in [-1, 1] {
                 for sz: Float in [-1, 1] { add(.generateSphere(radius: 0.013), m, at: SIMD3<Float>(sx * 0.047, 0, sz * 0.009)) }
@@ -348,7 +384,7 @@ final class Prop {
             let vb = entity.visualBounds(relativeTo: entity)
             let e = vb.extents
             if e.x > 0.003 && e.y > 0.003 && e.z > 0.003 && e.x < 1 && e.y < 1 && e.z < 1 {
-                if id == "ball" || id == "ball_mini" || id == "squeak_ball" {
+                if item == "ball" || item == "ball_mini" || item == "squeak_ball" {
                     shape = ShapeResource.generateSphere(radius: max(e.x, e.y, e.z) / 2).offsetBy(translation: vb.center)
                 } else {
                     shape = ShapeResource.generateBox(size: e).offsetBy(translation: vb.center)
@@ -364,10 +400,10 @@ final class Prop {
             // 무게·도는 무게(관성)를 실제 모양으로 계산 — 0.4.0 은 무게만 주어 관성이 기본값(수십 g 물건에 너무 큼)이라
             // 부딪혀도 잘 돌지 않고 풍선처럼 둥둥 떠다니듯 움직였음
             var b = PhysicsBodyComponent(massProperties: PhysicsMassProperties(shape: shape, mass: mass),
-                                         material: PhysicsMaterialResource.generate(friction: id == "blanky" || id == "padsheet" || id == "bag" ? 0.95 : 0.7, restitution: bounce), mode: .dynamic)
-            b.linearDamping = id == "padsheet" ? 0.9 : 0.05             // 패드는 종이처럼 천천히 내려앉음
+                                         material: PhysicsMaterialResource.generate(friction: item == "blanky" || item == "padsheet" || item == "bag" ? 0.95 : 0.7, restitution: bounce), mode: .dynamic)
+            b.linearDamping = item == "padsheet" ? 0.9 : 0.05             // 패드는 종이처럼 천천히 내려앉음
             b.isContinuousCollisionDetectionEnabled = true        // 빨리 던져도 소파·벽(얇은 스캔 면)을 뚫고 지나가지 않게
-            b.angularDamping = id == "ball" || id == "ball_mini" || id == "squeak_ball" ? 0.15 : 0.6
+            b.angularDamping = item == "ball" || item == "ball_mini" || item == "squeak_ball" ? 0.15 : 0.6
             entity.components.set(b)
             entity.components.set(PhysicsMotionComponent())
         } else if kind == .fixed {
@@ -376,7 +412,7 @@ final class Prop {
             entity.components.set(PhysicsBodyComponent(massProperties: .default,
                                                        material: PhysicsMaterialResource.generate(friction: 0.9, restitution: 0.05), mode: .kinematic))
         }
-        if id == "pee" { fill = 1 }
+        if item == "pee" { fill = 1 }
         showFill()
     }
 
@@ -403,11 +439,11 @@ final class Prop {
     /// 닦은 패드는 누렇게, 똥을 담은 봉투는 불룩하게
     private func showUsed() {
         guard used else { return }
-        if id == "padsheet" {
+        if item == "padsheet" {
             let c = ModelEntity(mesh: Geo.puddle(0.07, seed: 7) ?? .generateBox(size: 0.001), materials: [Geo.mat(SIMD3<Float>(0.86, 0.76, 0.40), rough: 0.8)])
             c.position = SIMD3<Float>(0, 0.0072, 0)
             entity.addChild(c)
-        } else if id == "bag" {
+        } else if item == "bag" {
             entity.children.first?.scale = SIMD3<Float>(1.1, 0.95, 1.25)
         }
     }
@@ -551,7 +587,7 @@ final class Prop {
     /// 그릇에 담긴 양·패드 얼룩·닦이는 오줌
     private func showFill() {
         guard let c = content else { return }
-        switch id {
+        switch item {
         case "pad", "padsheet":
             // 새 패드는 깨끗하게 (0.10.0: 꺼낸 패드에 쓰던 패드의 얼룩이 그대로 보였음). 쓴 횟수 = fill·3
             _ = c
@@ -615,7 +651,7 @@ final class Prop {
 
     /// 물건의 대략적인 상자 (절반 크기). 바닥에 놓는 것은 밑면이 원점
     private var half: SIMD3<Float> {
-        switch id {
+        switch item {
         case "bowl_food", "bowl_water": return SIMD3<Float>(0.078, 0.022, 0.078)
         case "blanket": return SIMD3<Float>(0.27, 0.008, 0.22)
         case "cushion": return SIMD3<Float>(0.27, 0.015, 0.22)
@@ -648,7 +684,7 @@ final class Prop {
     /// 이 물건 위에 올라선 자리의 높이 (물건 밑면에서). 올라서는 물건(담요·방석·패드)이 아니거나 밖이면 nil
     func top(at w: SIMD3<Float>) -> Float? {
         let l = entity.convert(position: w, from: nil)
-        switch id {
+        switch item {
         case "blanket": return abs(l.x) < 0.27 && abs(l.z) < 0.22 ? 0.012 : nil       // 살짝 눌림
         case "cushion": return abs(l.x) < 0.27 && abs(l.z) < 0.22 ? 0.024 : nil       // 3cm 매트가 살짝 눌림
         case "pad": return abs(l.x) < 0.23 && abs(l.z) < 0.17 ? 0.005 : nil
@@ -675,6 +711,60 @@ final class Prop {
 }
 
 /// 간단한 그물·재질
+/// 이름표 (0.11.0): 팸 목의 이름표, 팸마다 따로 쓰는 물건(그릇·잠자리·젖병)에 붙는 이름 — 글자를 그림으로 그려 판에 입힘
+@MainActor
+enum NameTag {
+    private static var cache: [String: TextureResource] = [:]
+
+    static func texture(_ text: String, bg: UIColor, fg: UIColor, w: Int = 320, h: Int = 128) -> TextureResource? {
+        let key = "\(text)|\(w)x\(h)|\(bg.description)"
+        if let t = cache[key] { return t }
+        let fmt = UIGraphicsImageRendererFormat()
+        fmt.scale = 1
+        fmt.opaque = false
+        let size = CGSize(width: w, height: h)
+        let img = UIGraphicsImageRenderer(size: size, format: fmt).image { _ in
+            let r = CGRect(origin: .zero, size: size)
+            bg.setFill()
+            UIBezierPath(roundedRect: r.insetBy(dx: 2, dy: 2), cornerRadius: CGFloat(h) * 0.42).fill()
+            fg.withAlphaComponent(0.35).setStroke()
+            let edge = UIBezierPath(roundedRect: r.insetBy(dx: 8, dy: 8), cornerRadius: CGFloat(h) * 0.36)
+            edge.lineWidth = 3
+            edge.stroke()
+            // 이름이 길면 글자를 줄여 판 안에 맞춤
+            var fs = CGFloat(h) * 0.56
+            var attrs: [NSAttributedString.Key: Any] = [:]
+            var ts = CGSize.zero
+            repeat {
+                attrs = [.font: UIFont.systemFont(ofSize: fs, weight: .heavy), .foregroundColor: fg]
+                ts = (text as NSString).size(withAttributes: attrs)
+                fs -= 2
+            } while ts.width > CGFloat(w) * 0.84 && fs > 12
+            (text as NSString).draw(at: CGPoint(x: (CGFloat(w) - ts.width) / 2, y: (CGFloat(h) - ts.height) / 2), withAttributes: attrs)
+        }
+        guard let cg = img.cgImage, let t = try? TextureResource(image: cg, options: .init(semantic: .color)) else { return nil }
+        cache[key] = t
+        return t
+    }
+
+    /// 이름 판 (앞면이 +z, 뒷면도 보임)
+    static func plate(_ text: String, width: Float, height: Float, bg: UIColor, fg: UIColor, metal: Float = 0) -> ModelEntity {
+        var m = PhysicallyBasedMaterial()
+        if let t = texture(text, bg: bg, fg: fg, w: 320, h: Int(320 * height / width)) { m.baseColor = .init(texture: .init(t)) }
+        else { m.baseColor = .init(tint: bg) }
+        m.roughness = .init(floatLiteral: metal > 0 ? 0.35 : 0.7)
+        m.metallic = .init(floatLiteral: metal)
+        m.faceCulling = .none
+        m.blending = .transparent(opacity: .init(floatLiteral: 1))
+        return ModelEntity(mesh: .generatePlane(width: width, height: height, cornerRadius: min(width, height) * 0.4), materials: [m])
+    }
+
+    /// 팸 목에 거는 이름표 (금빛 판)
+    static func collar(_ name: String) -> ModelEntity {
+        plate(name, width: 0.042, height: 0.022, bg: UIColor(red: 0.90, green: 0.74, blue: 0.40, alpha: 1), fg: UIColor(red: 0.32, green: 0.20, blue: 0.10, alpha: 1), metal: 0.6)
+    }
+}
+
 @MainActor
 enum Geo {
     static func mat(_ c: SIMD3<Float>, rough: Float, metal: Float = 0, coat: Float = 0) -> RealityKit.Material {
