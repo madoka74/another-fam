@@ -33,8 +33,9 @@ def mix(a, b, t):
     return {k: lerp(a[k], b[k], t) for k in a}
 
 
-def solve(s):
-    """자세 → (뿌리 옮김 3, 관절 사원수 NJ×4, 덤 4). 디딘 발이 땅에 못 닿으면(다리가 다 펴짐) 몸을 그만큼 내림"""
+def solve(s, pre=0.):
+    """자세 → (뿌리 옮김 3, 관절 사원수 NJ×4, 덤 4). 디딘 발이 땅에 못 닿으면(다리가 다 펴짐) 몸을 그만큼 내림.
+    pre: 미리 내려 둘 몸 높이 (clip 이 앞뒤 장과 이어지게 고른 값)"""
     q = np.tile(QI, (NJ, 1))
     q[IDX["root"]] = qeuler(s["pitch"], s["yaw"], s["roll"])
     for n, k in (("spine", "sp"), ("chest", "ch"), ("neck", "nk"), ("head", "hd")):
@@ -43,7 +44,7 @@ def solve(s):
     q[IDX["earL"]] = qmul(rz(s["ear"][0]), rx(s["ear"][1])); q[IDX["earR"]] = qmul(rz(-s["ear"][0]), rx(s["ear"][1]))
     L, C = s["tail"]
     for n, a in (("tail1", L), ("tail2", C * .5), ("tail3", C * .3), ("tail4", C * .2)): q[IDX[n]] = rx(a)
-    pos = np.array([s["dx"], s["dy"], s["dz"]])
+    pos = np.array([s["dx"], s["dy"] - pre, s["dz"]])
     for it in range(3):
         R, T, _ = fk(q, pos)
         for leg in LEGS:
@@ -82,7 +83,7 @@ def clip(name, keys, loop=False, speed=0., mod=None, events=(), mask=None, tag="
     """keys: [(시각, 자세)]. mod(자세, t) → 자세 (걸음처럼 식으로 만드는 움직임). mask='head' 면 머리 겹치기 동작"""
     dur = keys[-1][0]
     n = max(2, int(round(dur * FPS)) + (0 if loop else 1))
-    fr = []
+    fr = []; st = []
     for f in range(n):
         t = f / FPS
         k = 0
@@ -100,7 +101,21 @@ def clip(name, keys, loop=False, speed=0., mod=None, events=(), mask=None, tag="
                 for j in range(3):
                     i = IDX[l + "0"] + j
                     q[i] = qslerp(qa[i], qb[i], ease(u))
-        fr.append((p, q, e))
+        fr.append((p, q, e)); st.append((s, swap, u, a, b))
+    # 0.10.14: 디딘 발이 못 닿아 몸을 내린 만큼(solve)이 장마다 따로라, 걸음마다 몸이 1~2cm 내려갔다가 한 장 만에 툭 올라왔음
+    # (걷기·종종걸음·몸 돌리기에서 덜컥거림) → 앞뒤 0.1초 안에서 가장 많이 내린 만큼을 고르게 이어 다시 풂 (발은 늘 땅에 닿음)
+    drop = np.array([st[f][0]["dy"] - fr[f][0][1] for f in range(n)])
+    if drop.max() > 5e-4:
+        W = 3
+        idx = lambda f: f % n if loop else min(n - 1, max(0, f))
+        env = np.array([max(drop[idx(f + k)] for k in range(-W, W + 1)) for f in range(n)])
+        sm = np.array([np.mean([env[idx(f + k)] for k in range(-W, W + 1)]) for f in range(n)])
+        for f in range(n):
+            s, swap, u, a, b = st[f]
+            # 선 몸이고 네 다리 모두 발 닿을 곳으로 푸는 장만 (누운·웅크린 자세는 더 내리면 다리가 접혀 뒤집히고,
+            # 다리를 직접 꺾는 장('a')은 몸만 내려가 발이 바닥 아래로 들어감)
+            if sm[f] - drop[f] < 2e-4 or s["dy"] < -.03 or swap or any(s[l][0] == 'a' for l in LEGS): continue
+            fr[f] = solve(s, pre=sm[f])
     CLIPS.append(dict(name=name, n=n, loop=loop, speed=speed, events=[[round(float(t), 3), e] for t, e in events], mask=mask or "", tag=tag, fr=fr))
 
 
@@ -304,12 +319,14 @@ def plant_turn(yaw_fn, T, P, lift=.022):
         off = STEP_ORDER[leg]
         x = t / P - off
         n = np.floor(x); u = x - n
-        tgt = lambda k: yaw_fn((k + off + .75) * P)              # k 번째 걸음으로 디딜 곳 (몸보다 조금 앞)
+        # k 번째 걸음으로 디딜 곳: 발을 내려놓는 때(.5P)보다 반 걸음(.5P) 뒤 몸이 바라볼 쪽 → 디딘 동안 몸이 발 위를 지나가
+        # 발과 몸 사이 비틀림이 ±반 걸음 몫으로 고르게 (0.10.13 은 .75 라 한쪽으로 치우쳐 더 비틀렸음)
+        tgt = lambda k: yaw_fn((k + off + 1.0) * P)
         prev = tgt(n - 1) if n >= 0 else yaw_fn(0)
         if n < 0: return yaw_fn(0), 0.
-        if u < .45:
-            k = ease(u / .45)
-            return prev + (tgt(n) - prev) * k, lift * np.sin(np.pi * u / .45) * (1 if abs(tgt(n) - prev) > 1e-3 else 0)
+        if u < .5:
+            k = ease(u / .5)
+            return prev + (tgt(n) - prev) * k, lift * np.sin(np.pi * u / .5) * (1 if abs(tgt(n) - prev) > 1e-3 else 0)
         return tgt(n), 0.
     def m(s, t):
         y = yaw_fn(t)
@@ -329,8 +346,10 @@ def plant_turn(yaw_fn, T, P, lift=.022):
     return m
 
 
-def turn(name, ang, T=.55):
-    P = T / 2.2
+def turn(name, ang):
+    # 0.10.14: 한 걸음에 몸이 40° 넘게 돌지 않게 (전에는 90° 를 0.55초 두 걸음에 돌아 디딘 다리가 크게 비틀렸음)
+    P = .26
+    T = abs(ang) * .55 + .1
     yaw_fn = lambda t: ang * ease(min(1, max(0, t / T)))
     m0 = plant_turn(yaw_fn, T, P, lift=.018)
     def m(s, t):
@@ -342,11 +361,13 @@ def turn(name, ang, T=.55):
     clip(name, [(0, STAND), (D_, STAND)], mod=m, events=[(P * (i + .45), "step") for i in range(int(D_ / P * 2))], tag="turn", lin=True)
 
 
-turn("turn_l", np.pi / 2); turn("turn_r", -np.pi / 2); turn("turn_back", np.pi, .8)
+turn("turn_l", np.pi / 2); turn("turn_r", -np.pi / 2); turn("turn_back", np.pi)
 
 
 # ---------------- 서서 하는 동작 ----------------
-def shake_mod(amp=.32, f=7.5, dur=1.3):
+# 0.10.14: 털기를 초당 7.5~8번으로 흔들었더니 앱이 몸을 다시 그리는 빠르기(초당 수십 번, 일정하지 않음)와 맞물려
+# 머리·몸·다리가 한쪽으로 빙글빙글 도는 것처럼 보였음(마차 바퀴 착시). 화면에서 흔들림으로 읽히는 초당 4번 안쪽으로 — 다른 흔들기도 같음
+def shake_mod(amp=.22, f=4.0, dur=1.3):
     def m(s, t):
         k = np.sin(np.pi * min(1, t / dur)) ** .7
         a = amp * k * np.sin(2 * np.pi * f * t)
@@ -358,7 +379,7 @@ def shake_mod(amp=.32, f=7.5, dur=1.3):
 
 clip("shake", [(0, STAND), (.15, S(dy=-.008, FL=(.012, 0, 0, 0), FR=(.012, 0, 0, 0), HL=(.012, 0, 0, 0), HR=(.012, 0, 0, 0))), (1.3, S(dy=-.008, FL=(.012, 0, 0, 0), FR=(.012, 0, 0, 0), HL=(.012, 0, 0, 0), HR=(.012, 0, 0, 0))), (1.6, STAND)],
      mod=shake_mod(), events=[(.2, "shake")], tag="act")
-clip("shake_sit", [(0, SIT), (1.3, SIT), (1.5, SIT)], mod=shake_mod(.26, 8, 1.3), events=[(.1, "shake")], tag="act")
+clip("shake_sit", [(0, SIT), (1.3, SIT), (1.5, SIT)], mod=shake_mod(.18, 4.0, 1.3), events=[(.1, "shake")], tag="act")
 seq("stretch_front", [(0, STAND), (.7, S(BOW, pitch=.5, wag=.2, nk=(-.6, 0, 0), FL=(.0, .014, .13, -1.35), FR=(.0, .014, .13, -1.35), jaw=.0)), (1.2, S(BOW, pitch=.52, wag=.2, nk=(-.7, 0, 0), jaw=.5, lid=.9, FL=(.0, .014, .135, -1.35), FR=(.0, .014, .135, -1.35))), (.6, STAND)], tag="act")
 seq("stretch_back", [(0, STAND), (.7, S(pitch=-.22, dz=.04, dy=-.004, nk=(-.3, 0, 0), HL=(0, .0, -.075, .75), HR=(0, 0, -.06, .5), tail=(-.6, -.3))), (.9, S(pitch=-.25, dz=.045, nk=(-.4, 0, 0), HL=(0, .008, -.085, .9), HR=(0, 0, -.06, .5), tail=(-.6, -.3))), (.5, STAND)], tag="act")
 clip("bow_wiggle", [(0, BOW), (1.6, BOW)], loop=True, mod=chain(osc("sp", .14, 3.2, idx=1), osc("yaw", .05, 3.2, .25), osc("hd", .12, 1.6, idx=2)), tag="act")
@@ -399,17 +420,18 @@ hold("alert", S(dy=.004, nk=(-.3, 0, 0), hd=(.2, 0, 0), ear=(.35, -.2), tail=(.3
 seq("bark_body", [(0, STAND), (.08, S(dz=.012, pitch=-.05, FL=(0, .012, .01, 0), FR=(0, .012, .01, 0), tail=(.25, 0))), (.1, S(dz=.004)), (.2, STAND)], events=[(.1, "step")], tag="act")
 seq("paw_at", [(0, STAND), (.2, S(roll=.06, FR=(.0, .06, .06, -.7))), (.14, S(roll=.06, FR=(.0, .02, .10, -.2))), (.14, S(roll=.06, FR=(0, .06, .06, -.7))), (.14, S(roll=.06, FR=(0, .02, .10, -.2))), (.2, STAND)], events=[(.34, "pat"), (.62, "pat")], tag="act")
 seq("nose_push", [(0, STAND), (.25, S(pitch=.12, nk=(.8, 0, 0), hd=(.3, 0, 0))), (.12, S(pitch=.14, dz=.02, nk=(.7, 0, 0), hd=(.1, 0, 0))), (.3, STAND)], events=[(.37, "pat")], tag="act")
-clip("shake_toy", [(0, S(nk=(.2, 0, 0), jaw=.25, ear=(.5, 0), wag=.8)), (1.2, S(nk=(.2, 0, 0), jaw=.25, ear=(.5, 0), wag=.8))], loop=True, mod=chain(osc("nk", .5, 6, idx=1), osc("hd", .5, 6, .2, idx=2), osc("ch", .1, 6, .4, idx=1)), events=[(.0, "shake")], tag="act")
+clip("shake_toy", [(0, S(nk=(.2, 0, 0), jaw=.25, ear=(.5, 0), wag=.8)), (1.2, S(nk=(.2, 0, 0), jaw=.25, ear=(.5, 0), wag=.8))], loop=True, mod=chain(osc("nk", .3, 2.5, idx=1), osc("hd", .3, 2.5, .2, idx=2), osc("ch", .08, 2.5, .4, idx=1)), events=[(.0, "shake")], tag="act")
 clip("tug", [(0, S(CROUCH, dz=-.03, pitch=-.12, nk=(.15, 0, 0), jaw=.22, wag=.6, tail=(.1, 0))), (1.0, S(CROUCH, dz=-.03, pitch=-.12, nk=(.15, 0, 0), jaw=.22, wag=.6, tail=(.1, 0)))], loop=True, mod=chain(osc("dz", .012, 3), osc("nk", .22, 4, idx=1), osc("hd", .2, 4, .25, idx=2)), tag="act")
 clip("wiggle", [(0, S(wag=1)), (1.2, S(wag=1))], loop=True, mod=chain(osc("sp", .2, 3.3, idx=1), osc("yaw", .07, 3.3, .5), osc("ch", .1, 3.3, .25, idx=1), osc("hd", .1, 3.3, idx=2)), tag="act")
 seq("look_back", [(0, STAND), (.4, S(sp=(0, .25, 0), ch=(0, .3, 0), nk=(0, .8, 0), hd=(0, .7, 0))), (.9, S(sp=(0, .25, 0), ch=(0, .3, 0), nk=(0, .8, 0), hd=(0, .7, .1))), (.4, STAND)], tag="act")
 
 
 def spin(name, sgn):
-    # 제자리에서 한 바퀴 (꼬리 쫓기·볼일 전 맴돌기·'돌아' 재주): 몸 한가운데를 축으로 1.8초에 한 바퀴,
-    # 네 발로 또박또박 걸어 돌듯 (한 발이 한 바퀴에 5번쯤 옮겨 디딤). 고개는 도는 쪽으로 조금 앞서 봄
-    T = 1.8
-    P = T / 5
+    # 제자리에서 한 바퀴 (꼬리 쫓기·볼일 전 맴돌기·'돌아' 재주): 몸 한가운데를 축으로 2.6초에 한 바퀴,
+    # 네 발로 잔걸음으로 돌듯 (한 발이 한 바퀴에 10번 옮겨 디딤). 고개는 도는 쪽으로 조금 앞서 봄
+    # 0.10.13 은 1.8초에 5걸음이라 디딘 발 위로 몸이 한 걸음에 75° 가까이 돌아, 다리가 엉덩이를 축으로 크게 비틀려 빙글 돌았음
+    T = 2.6
+    P = T / 10
     yaw_fn = lambda t: sgn * 2 * np.pi * ease(min(1, max(0, t / T))) ** 1 if t < T else sgn * 2 * np.pi
     lin_yaw = lambda t: sgn * 2 * np.pi * (min(1, max(0, t / T)) * .9 + .1 * ease(min(1, max(0, t / T))))
     m0 = plant_turn(lin_yaw, T, P, lift=.024)
@@ -445,12 +467,16 @@ hold("doze_sit", S(SIT, lid=.85), 4.0, mod=lambda s, t: dict(s, nk=(.14 + .45 * 
 # ---------------- 앉아서 ----------------
 def scratch(name, sgn):
     leg = "HL" if sgn > 0 else "HR"
+    # 0.10.14: 긁는 다리를 들어 올리는 동안(.4초)도 그 자세로 이어지게 'a' 자세를 base 에 넣음 — 전에는 .4초에 앉은 다리에서
+    # 긁는 다리로 한 장 만에 휙 바뀌었음. 긁기는 초당 7번 → 4번 (털기와 같은 까닭: 화면에서 다리가 빙글 도는 것처럼 보였음)
     base = S(SIT, roll=-sgn * .14, sp=(.1, sgn * .2, 0), nk=(.3, sgn * .5, 0), hd=(.3, sgn * .3, sgn * .5), lid=.6, ear=(.3, 0), wag=0)
+    base[leg] = ('a', -1.9, .55, -1.0, .2)
     def m(s, t):
-        s[leg] = ('a', -1.9 + .28 * np.sin(2 * np.pi * t / .14), .55, -1.0, .2 + .5 * np.sin(2 * np.pi * t / .14 + 1))
-        s["hd"] = (s["hd"][0], s["hd"][1], s["hd"][2] + .05 * np.sin(2 * np.pi * t / .14))
+        k = min(1, (t - .4) / .15, (2.1 - t) / .15)
+        s[leg] = ('a', -1.9 + .24 * k * np.sin(2 * np.pi * (t - .4) / .25), .55, -1.0, .2 + .35 * k * np.sin(2 * np.pi * (t - .4) / .25))
+        s["hd"] = (s["hd"][0], s["hd"][1], s["hd"][2] + .05 * k * np.sin(2 * np.pi * (t - .4) / .25))
         return s
-    seq(name, [(0, SIT), (.4, base), (1.7, base), (.4, SIT)], mod=lambda s, t: m(s, t) if .4 < t < 2.1 else s, events=[(.45 + i * .14, "scratch") for i in range(11)], tag="act")
+    seq(name, [(0, SIT), (.4, base), (1.7, base), (.4, SIT)], mod=lambda s, t: m(s, t) if .4 < t < 2.1 else s, events=[(.46 + i * .25, "scratch") for i in range(7)], tag="act")
 
 
 scratch("scratch_l", 1); scratch("scratch_r", -1)
@@ -516,7 +542,7 @@ head("whine", [(0, {}), (.3, dict(nk=(.15, 0, 0), hd=(-.25, 0, .1), ear=(0, .4),
 head("sniff_air", [(0, {}), (.3, dict(nk=(-.3, 0, 0), hd=(-.3, 0, 0))), (1.2, dict(nk=(-.3, 0, 0), hd=(-.3, 0, 0))), (.3, {})], mod=chain(osc("hd", .04, 6, idx=0), osc("hd", .1, .8, idx=1)), events=[(.4, "sniff"), (.9, "sniff")])
 head("sneeze", [(0, {}), (.25, dict(nk=(-.2, 0, 0), hd=(-.2, 0, 0), lid=.6)), (.07, dict(nk=(.35, 0, 0), hd=(.4, 0, 0), lid=1, jaw=.2)), (.2, dict(nk=(.1, 0, 0), lid=.5)), (.25, {})], events=[(.25, "sneeze")])
 head("nod", [(0, {}), (.18, dict(hd=(.3, 0, 0))), (.18, dict(hd=(-.1, 0, 0))), (.18, dict(hd=(.25, 0, 0))), (.2, {})])
-head("shake_head", [(0, {}), (.9, {}), (.1, {})], mod=lambda s, t: dict(s, hd=(0, 0, .9 * np.sin(np.pi * min(1, t / .9)) * np.sin(2 * np.pi * 8 * t)), ear=(.9 * np.sin(np.pi * min(1, t / .9)), 0), lid=.8 * np.sin(np.pi * min(1, t / .9))), events=[(.05, "flap")])
+head("shake_head", [(0, {}), (.9, {}), (.1, {})], mod=lambda s, t: dict(s, hd=(0, 0, .4 * np.sin(np.pi * min(1, t / .9)) * np.sin(2 * np.pi * 3.5 * t)), ear=(.9 * np.sin(np.pi * min(1, t / .9)), 0), lid=.8 * np.sin(np.pi * min(1, t / .9))), events=[(.05, "flap")])
 head("ear_perk", [(0, {}), (.12, dict(ear=(.4, -.25), nk=(-.1, 0, 0))), (.9, dict(ear=(.4, -.25), nk=(-.1, 0, 0))), (.3, {})])
 head("ear_back", [(0, {}), (.2, dict(ear=(.05, .5), lid=.3)), (.9, dict(ear=(.05, .5), lid=.3)), (.3, {})])
 head("chew_head", [(0, dict(jaw=.05)), (.8, dict(jaw=.05))], loop=True, mod=chain(osc("jaw", .12, 2.5), lambda s, t: dict(s, jaw=abs(s["jaw"])), osc("hd", .04, 1.25, idx=2)), events=[(.1, "chomp"), (.5, "chomp")])

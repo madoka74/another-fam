@@ -158,11 +158,17 @@ def leg_ik(leg, Rp, Pp_joint, target, foot_pitch):
     delta = -(phi - phi0)
     q1 = rx(delta)
     w1 = u + qmat(q1) @ l
-    sb = np.clip(-t[0] / w1[1], -.95, .95) if abs(w1[1]) > 1e-4 else 0.0
-    beta = np.arcsin(sb)
-    w2 = qmat(rz(beta)) @ w1
-    alpha = np.arctan2(t[2], t[1]) - np.arctan2(w2[2], w2[1])
-    q0 = qmul(rx(alpha), rz(beta))
+    # 0.10.14: 엉덩·어깨 돌림을 '앞뒤 rx · 옆 rz' 로 나눠 풀던 것(sin β = −t.x / w1.y)은 다리를 많이 접어 w1.y 가 0 에 가까워지면
+    # 옆으로 벌리는 각이 ±72° 사이를 한 장 만에 뒤집혀, 제자리 돌기·몸 돌리기·뛰기에서 다리가 가운데를 축으로 휙휙 돌았음.
+    # → 다리(w1)를 발 닿을 곳(t) 쪽으로 돌리되, 무릎 경첩 축(x)은 t 에 수직이면서 몸의 좌우축에 가장 가깝게 — 다리를 거의
+    #   옆으로 뻗지 않는 한 늘 이어지는 하나의 답
+    X = np.array([1., 0., 0.])
+    a1 = w1 / np.linalg.norm(w1); a3 = np.cross(X, a1)
+    tn = t / np.linalg.norm(t)
+    h = X - np.dot(X, tn) * tn; h /= np.linalg.norm(h)
+    b3 = np.cross(h, tn)
+    A_ = np.stack([X, a1, a3], 1); B_ = np.stack([h, tn, b3], 1)
+    q0 = mat_q(B_ @ A_.T)
     Rl = Rp @ qmat(q0) @ qmat(q1)
     # 발: 세계 기울기 foot_pitch (개가 보는 쪽 기준) → 아랫다리 기준으로
     want = qmat(rx(foot_pitch))

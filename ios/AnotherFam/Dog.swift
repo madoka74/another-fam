@@ -986,7 +986,7 @@ final class Dog {
                     pendingTrick = nil
                     if k == "roll" { anim.play("roll_over", then: "down"); rolledAt = now + 1.6 }
                     if k == "paw" { anim.play(Bool.random() ? "paw_l" : "paw_r", then: "sit"); pawAt = now }
-                    if k == "spin" { anim.play(Bool.random() ? "spin_l" : "spin_r", then: "stand"); spunAt = now + 1.6 }
+                    if k == "spin" { anim.play(Bool.random() ? "spin_l" : "spin_r", then: "stand"); spunAt = now + 2.6 }
                     if k == "speak" { bark(); barkedAt = now }
                 }
                 if now > until { begin(.idle, for: 1) }
@@ -1177,7 +1177,7 @@ final class Dog {
         case 9: anim.overlay("sniff_air")
         case 10: if anim.posture == "stand" { anim.play("sniff_ground", then: "stand") }
         case 11: anim.setPosture("down"); anim.hold("lick_paw"); until = s.now + 6; holdStopAt = s.now + 5.8
-        case 12: if young && anim.posture == "stand" { anim.play(Bool.random() ? "spin_l" : "spin_r", then: "stand"); until = s.now + 2.7 }
+        case 12: if young && anim.posture == "stand" { anim.play(Bool.random() ? "spin_l" : "spin_r", then: "stand"); until = s.now + 3.2 }
         case 13: if p.mood > 0.6 && stage != .senior { anim.setPosture("belly"); anim.hold("belly_wriggle"); until = s.now + 4; holdStopAt = s.now + 3.8 }
         case 14: if young && anim.posture == "stand" { anim.play(Bool.random() ? "tumble" : "plop", then: "sit") }
         case 15: if stage == .senior { anim.setPosture("sit"); anim.hold("doze_sit"); until = s.now + 8; holdStopAt = s.now + 7.8 } else { anim.overlay("lick_lips") }
@@ -1855,7 +1855,7 @@ final class Dog {
             let a = atan2(d.x, d.y)
             if let la = lastLureAng { var da = a - la; if da > .pi { da -= 2 * .pi } else if da < -.pi { da += 2 * .pi }; spinAcc += da }
             lastLureAng = a
-            if abs(spinAcc) > 4.2 && !anim.busy { anim.play(spinAcc > 0 ? "spin_l" : "spin_r", then: "stand"); spunAt = s.now + 1.6; spinAcc = 0; return }
+            if abs(spinAcc) > 4.2 && !anim.busy { anim.play(spinAcc > 0 ? "spin_l" : "spin_r", then: "stand"); spunAt = s.now + 2.6; spinAcc = 0; return }
         } else { lastLureAng = nil }
         spinAcc *= max(0, 1 - dt * 0.6)
         if abs(spinAcc) > 2.0 || s.now < spunAt { lureT = 0; return }      // 크게 돌리는 중(115° 넘게)엔 앉지 않고 따라 돎      // 돌리는 중엔 앉지 않고 따라 돎

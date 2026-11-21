@@ -261,8 +261,9 @@ final class DogAnimator {
         }
         p.q[J.neck] = cap(p.q[J.neck], max(0.9, ang(base.q[J.neck]) + 0.05))
         p.q[J.head] = cap(p.q[J.head], max(0.8, ang(base.q[J.head]) + 0.05))
-        let fast = cur.name.hasPrefix("shake") || ov?.name == "shake_head" || ov?.name == "sneeze" || cur.name == "startle"
-        if prevOK && !fast && dt > 0 {
+        // 0.10.14: 털기·머리 털기·재채기도 예외 없이 — 초당 8번 머리 털기가 화면 그리는 빠르기와 맞물려 머리가 빙글빙글 도는 것처럼
+        // 보였음 (동작 자체도 초당 3.5~4번으로 낮춤). 이 한도 안이면 어떤 동작이 겹쳐도 그렇게 보이지 않음
+        if prevOK && dt > 0 {
             let lim: Float = 7 * dt
             for (j, prev) in [(J.neck, prevNeck), (J.head, prevHead)] {
                 let d = ang(prev.inverse * p.q[j])
@@ -273,12 +274,12 @@ final class DogAnimator {
     }
 
     /// 몸통 안전장치 (0.10.7): 몸·허리·가슴이 초당 6 라디안보다 빠르게 돌지 않게.
-    /// 동작 156개 가운데 이보다 빠른 것은 구르기·제자리 돌기·덮치기·뒤돌기·털기뿐(그대로 둠) —
+    /// 동작 156개 가운데 이보다 빠른 것은 구르기·제자리 돌기·덮치기·뒤돌기뿐(그대로 둠, 털기는 0.10.14 부터 한도 안) —
     /// 그 밖에 이보다 빠르면 서로 다른 자세 사이를 갑자기 섞은 것(누운 자세 → 걸음 등)이라 천천히 이어 줌
     private var prevBody = [simd_quatf](repeating: Q.id, count: 3), prevBodyOK = false
     private func guardBody(_ p: inout Pose, _ dt: Float) {
         let n = cur.name
-        let fast = n == "roll_over" || n.hasPrefix("spin") || n == "pounce" || n.hasPrefix("turn_") || n.hasPrefix("shake") || n == "tumble" || n == "startle" || cur.tag == "jump" || n.hasPrefix("held")
+        let fast = n == "roll_over" || n.hasPrefix("spin") || n == "pounce" || n.hasPrefix("turn_") || n == "tumble" || n == "startle" || cur.tag == "jump" || n.hasPrefix("held")
         let js = [J.root, J.spine, J.chest]
         if prevBodyOK && !fast && dt > 0 {
             let lim: Float = 6 * dt

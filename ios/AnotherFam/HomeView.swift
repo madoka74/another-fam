@@ -89,8 +89,9 @@ struct AdoptView: View {
                         .background(.white.opacity(pick == b.id ? 0.22 : 0.08), in: RoundedRectangle(cornerRadius: 24))
                         .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 24))
                         .hoverEffect(.highlight)
+                        .hoverEffect(isEnabled: true) { e, on, _ in e.scaleEffect(on ? 1.04 : 1) }      // 고리·재주 단추와 같은 바라보기 효과
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(RingPress())
                 }
             }
             HStack(spacing: 16) {
@@ -352,10 +353,13 @@ struct TrickChips: View {
                             .background(open ? Color.white.opacity(sel == t.key ? 0.32 : 0.16) : Color.white.opacity(0.05), in: Capsule())
                             .overlay(Capsule().stroke(.white.opacity(sel == t.key ? 0.6 : 0), lineWidth: 1.5))
                             .foregroundStyle(open ? Color.primary : Color.secondary.opacity(0.6))
+                            // 바라보면 고리와 똑같이: 단추 모양(캡슐) 그대로 밝아지고 조금 커짐 (0.10.14)
+                            // 0.10.13 은 .borderless 단추에 효과를 걸어 시스템이 단추 둘레를 둥근 네모로 부풀려 보였음 — 고리에서 고쳤던 것과 같은 실수
+                            .contentShape(.hoverEffect, Capsule())
+                            .hoverEffect(.highlight)
+                            .hoverEffect(isEnabled: true) { e, on, _ in e.scaleEffect(on ? 1.1 : 1) }
                     }
-                    .buttonStyle(.borderless)                      // 한 줄 안에 단추가 여럿 — 줄 전체가 하나로 눌리지 않게
-                    .contentShape(.hoverEffect, Capsule())
-                    .hoverEffect(.highlight)
+                    .buttonStyle(RingPress())                      // 시스템 단추 모양 없이 (한 줄 안 단추마다 따로 눌림)
                 }
             }
             if let k = sel, let t = TrickChips.all.first(where: { $0.key == k }) {
