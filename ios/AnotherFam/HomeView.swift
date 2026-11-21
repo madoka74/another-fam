@@ -315,6 +315,60 @@ struct RingPress: ButtonStyle {
 }
 
 // MARK: - 설정
+/// 재주 목록 (0.10.13): 단추 모양 이름표로 한눈에 — 나이가 되어 가르칠 수 있는 재주는 밝게, 아직이면 흐리게.
+/// 누르면 아래에 언제부터·어떻게 가르치는지 한두 줄. 익힌 만큼 % 표시
+struct TrickChips: View {
+    let pet: PetState
+    @State private var sel: String?
+
+    struct Info { let key: String; let title: String; let from: Double; let how: String }
+    static let all: [Info] = [
+        Info(key: "sit", title: "앉아", from: 42, how: "간식을 서 있는 팸 머리보다 조금 위로 → 앉아서 1초 있으면 간식"),
+        Info(key: "down", title: "엎드려", from: 42, how: "간식을 바닥 가까이 → 엎드려서 1초 있으면 간식"),
+        Info(key: "roll", title: "굴러", from: 42, how: "엎드린 팸 머리 옆에서 간식을 어깨 쪽으로 → 구르면 간식 (엎드려를 25% 익힌 뒤)"),
+        Info(key: "paw", title: "손", from: 56, how: "간식은 한 손에 들고, 앉은 팸 가슴 앞에 다른 빈 손바닥을 낮게 → 앞발을 올리면 간식"),
+        Info(key: "touch", title: "코", from: 42, how: "간식은 한 손에 들고, 서 있는 팸 코앞에 다른 빈 손바닥을 → 코를 대면 간식"),
+        Info(key: "speak", title: "짖어", from: 56, how: "간식을 내 얼굴 높이 이상으로 들고 기다림 → 짖으면 내려서 간식"),
+        Info(key: "spin", title: "돌아", from: 90, how: "서 있는 팸 머리 높이에서 간식으로 몸 둘레에 크게 원 → 한 바퀴 돌면 간식"),
+        Info(key: "beg", title: "애교", from: 120, how: "앉은 팸 머리 위로 간식을 조금 더 높게 → 앞발을 들고 1초 있으면 간식"),
+        Info(key: "hind", title: "일어서", from: 150, how: "팸 바로 위, 머리보다 훨씬 높게 → 뒷발로 서면 간식 (노견은 안 함)"),
+    ]
+
+    static func ageText(_ d: Double) -> String { d < 60 ? "생후 \(Int(d / 7))주" : "생후 \(Int((d / 30.4).rounded()))개월" }
+
+    var body: some View {
+        let age = pet.age()
+        VStack(alignment: .leading, spacing: 10) {
+            Text("재주").font(.callout).foregroundStyle(.secondary)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], alignment: .leading, spacing: 8) {
+                ForEach(TrickChips.all, id: \.key) { t in
+                    let open = age >= t.from && !(t.key == "hind" && Stage.of(age) == .senior)
+                    let skill = pet.tricks[t.key] ?? 0
+                    Button { sel = sel == t.key ? nil : t.key } label: {
+                        Text(skill > 0 ? "\(t.title) \(Int(skill * 100))%" : t.title)
+                            .font(.callout.weight(.medium))
+                            .frame(minWidth: 72)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .background(open ? Color.white.opacity(sel == t.key ? 0.32 : 0.16) : Color.white.opacity(0.05), in: Capsule())
+                            .overlay(Capsule().stroke(.white.opacity(sel == t.key ? 0.6 : 0), lineWidth: 1.5))
+                            .foregroundStyle(open ? Color.primary : Color.secondary.opacity(0.6))
+                    }
+                    .buttonStyle(.borderless)                      // 한 줄 안에 단추가 여럿 — 줄 전체가 하나로 눌리지 않게
+                    .contentShape(.hoverEffect, Capsule())
+                    .hoverEffect(.highlight)
+                }
+            }
+            if let k = sel, let t = TrickChips.all.first(where: { $0.key == k }) {
+                let open = age >= t.from && !(t.key == "hind" && Stage.of(age) == .senior)
+                Text((open ? "" : "\(TrickChips.ageText(t.from))부터 · ") + t.how + " · 할 때 말을 하고 15초 안에 간식을 주면 그 말도 배워요")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 struct SettingsTab: View {
     @State private var volume: Double = UserDefaults.standard.object(forKey: "af.volume") as? Double ?? 0
     @State private var askReset = false
@@ -368,6 +422,7 @@ struct SettingsTab: View {
             // 말로 부르기·시키기: 간식으로 재주를 가르치며 말하면 그 말을 배움 (사람마다 다른 말도 각각)
             Section("목소리") {
                 Toggle("말 알아듣기", isOn: Binding(get: { voice }, set: { voice = $0; VoiceEar.enabled = $0 }))
+                if let p = model.pet { TrickChips(pet: p) }
                 LabeledContent("최근 들은 말", value: VoiceEar.recent.isEmpty ? "없음" : VoiceEar.recent.prefix(5).joined(separator: " · "))
                 if let p = model.pet, p.words.values.allSatisfy({ ($0.values.max() ?? 0) < 0.2 }) {
                     LabeledContent("배운 말", value: "아직 없음")

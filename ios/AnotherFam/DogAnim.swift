@@ -51,6 +51,7 @@ final class DogAnimator {
     var moving: Bool { gait != nil }
     /// 자세가 자리 잡았는지 (이음 동작·한 번 하는 동작이 끝남)
     var settled: Bool { queue.isEmpty && !oneShot && gait == nil && cur.name == posture && fade >= 1 }
+    var dip: Float = 0                                // 고개를 더 숙이는 양 (라디안, + 가 아래)
     var busy: Bool { oneShot || inTransition }
     /// 자세를 바꾸는 이음 동작(앉았다 일어서기 등)이 아직 끝나지 않음.
     /// 0.10.6 까지: 마지막 이음 동작은 대기열에서 빠진 채 재생돼 '바쁘지 않음'으로 보였음 → 다리가 굽은 채 걸음·제자리 돌기·다른 동작이
@@ -225,6 +226,11 @@ final class DogAnimator {
         extras(&p, dt)
         guardHead(&p, base: base, dt)
         guardBody(&p, dt)
+        // 고개 숙이기 더하기 (먹기·물기에서 입을 그릇·물건 높이에 맞춤 — Dog 가 조절)
+        if abs(dip) > 1e-3 {
+            p.q[J.neck] = p.q[J.neck] * Q.rx(dip * 0.55)
+            p.q[J.head] = p.q[J.head] * Q.rx(dip * 0.45)
+        }
         pose = p
         // 땅에 맞춤 (뛰는 동작은 그대로)
         let (R, T, S) = D.fk(p, growth)

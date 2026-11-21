@@ -330,7 +330,8 @@ final class Dog {
         let r = min(rate, baby ? 1.2 : (stage == .senior ? 1.8 : 2.8))
         yaw += max(-r * dt, min(r * dt, dy))
         if turning && !anim.busy && path.isEmpty {
-            if !anim.moving { anim.setGait(gaitName(0)); turnGait = true }
+            // 제자리에서 돌 땐 '걷기' 대신 제자리 돌기 걸음(앞발은 도는 쪽, 뒷발은 반대쪽으로 옮겨 디딤) — 0.10.13
+            if !anim.moving { anim.setGait(baby || stage.rawValue < Stage.social.rawValue ? gaitName(0) : (dy > 0 ? "pivot_l" : "pivot_r")); turnGait = true }
         } else if turnGait && !turning {
             turnGait = false
             if path.isEmpty { anim.setGait(nil) }
@@ -541,10 +542,39 @@ final class Dog {
     private var pickAt: Double = 0
     private var dropAt: Double = 0
 
+    /// 물기 (0.10.13): 먼저 입이 물건 바로 위에 오도록 걸어서 자리를 맞추고(몸이 물건과 겹치지 않게) 고개를 숙여 입을 물건까지
+    /// 내린 뒤 물음. 물건은 순간이동 없이 입으로 0.15초에 걸쳐 들어옴.
+    /// 0.10.12 까지: 몸 가운데가 10cm 남짓 거리에 오면 고개 숙이는 동작과 함께 물건이 입으로 휙 옮겨 붙었음
     private func pickUp(_ p: Prop) {
         pickTarget = p
+        pickStarted = false
+        pickAt = s.now + 99
+        pickGiveUp = s.now + 4
+    }
+    private var pickStarted = false, pickByClip = false, pickGiveUp: Double = 0
+    private var carryFrom = SIMD3<Float>(0, 0, 0), carryBlend: Float = 1
+
+    /// 물건 앞 자리 잡기 → 고개 숙여 물기. 이 동안은 다른 할 일을 멈춤
+    private func pickApproach(_ dt: Float) {
+        guard let t = pickTarget, s.props.contains(where: { $0 === t }), t.heldBy == nil, s.now < pickGiveUp else { pickTarget = nil; return }
+        let tp = SIMD2<Float>(t.pos.x, t.pos.z)
+        var dv = tp - xz
+        let dl = simd_length(dv)
+        if dl > 1e-3 { dv /= dl } else { dv = SIMD2<Float>(sin(yaw), cos(yaw)) }
+        let reach: Float = 0.17 * g                                   // 고개를 숙였을 때 몸 가운데 → 입
+        let standAt = tp - dv * reach
+        if baby || anim.posture != standName {
+            pickStarted = true; pickByClip = false; pickAt = s.now + 0.1; return
+        }
+        if simd_distance(xz, standAt) > 0.03 {
+            if travel(dt, to: standAt, reach: 0.02, fast: 0) == -1 { pickTarget = nil }
+            return
+        }
+        stopMoving()
+        if !face(t.pos, dt, rate: 4) { return }
+        pickStarted = true; pickByClip = true
         pickAt = s.now + 0.34
-        if anim.posture == standName && !baby { anim.play("pick_up", then: standName) } else { pickAt = s.now + 0.1 }
+        anim.play("pick_up", then: standName)
     }
 
     private func putDown() {
@@ -735,10 +765,20 @@ final class Dog {
         lastPos = pos
         entity.position = pos
         entity.orientation = Q.ry(yaw) * Q.rx(-bodyTilt)
-        if let t = pickTarget, s.now >= pickAt {
+        if let t = pickTarget, pickStarted, s.now >= pickAt {
             pickTarget = nil
-            if s.props.contains(where: { $0 === t }), t.heldBy == nil, simd_distance(t.pos, mouthWorld) < 0.16 + 0.1 * g { grab(t) }
+            if s.props.contains(where: { $0 === t }), t.heldBy == nil, simd_distance(t.pos, mouthWorld) < (pickByClip ? 0.08 + 0.06 * g : 0.16 + 0.1 * g) {
+                carryFrom = t.pos; carryBlend = 0
+                grab(t)
+            }
         }
+        // 고개 높이 맞추기: 먹고 마실 땐 입을 그릇 속 사료·물 높이까지, 물 땐 물건 높이까지 (동작만으론 큰 강아지 입이 그릇 위 10cm 에 떠 있었음)
+        var dipY: Float?
+        if (act == .eat || act == .drink) && phase == 2, let b = target { dipY = b.pos.y + b.contentY + 0.006 }
+        if let t = pickTarget, pickStarted { dipY = t.pos.y + 0.004 }
+        if let y = dipY {
+            anim.dip = max(-0.25, min(0.9, anim.dip + (mouthWorld.y - y) * 9 * dt))
+        } else { anim.dip *= max(0, 1 - 5 * dt) }
         if dropAt > 0 && s.now >= dropAt { dropCarry(soft: true) }
         entity.scale = SIMD3<Float>(repeating: g)
         hit.scale = SIMD3<Float>(repeating: max(1, 0.55 / g))
@@ -800,7 +840,9 @@ final class Dog {
         if let c = carry {
             let hq = headRotWorld
             let hf = hq.act(SIMD3<Float>(0, 0, 1))
-            c.entity.setPosition(mouthWorld + hf * (c.base == "ball" ? 0.012 : 0.004) - SIMD3<Float>(0, c.base == "blanky" ? 0.03 : 0, 0), relativeTo: nil)
+            var at = mouthWorld + hf * (c.base == "ball" ? 0.012 : 0.004) - SIMD3<Float>(0, c.base == "blanky" ? 0.03 : 0, 0)
+            if carryBlend < 1 { carryBlend = min(1, carryBlend + dt / 0.15); at = carryFrom + (at - carryFrom) * carryBlend }   // 입으로 들어오는 0.15초
+            c.entity.setPosition(at, relativeTo: nil)
             c.entity.setOrientation(c.base == "blanky" ? hq * Q.rz(.pi / 2) : hq * Q.ry(.pi / 2), relativeTo: nil)
         }
         _ = now
@@ -913,6 +955,7 @@ final class Dog {
 
     // MARK: 행동 한 걸음
     private func step(_ dt: Float) {
+        if pickTarget != nil && !pickStarted { pickApproach(dt); if pickTarget != nil { return } }
         let now = s.now
         switch act {
         case .idle:
@@ -1248,7 +1291,8 @@ final class Dog {
         case 0:
             let d = b.pos - pos
             let l = max(1e-3, simd_length(SIMD2<Float>(d.x, d.z)))
-            let stand: SIMD2<Float> = bc - SIMD2<Float>(d.x, d.z) / l * (0.10 + 0.13 * g)
+            // 앞발(몸 가운데에서 0.10g 앞)이 그릇 테두리(반지름 7.5cm) 밖, 고개를 숙이면 입(0.185g 앞)이 그릇 안에 닿는 자리
+            let stand: SIMD2<Float> = bc - SIMD2<Float>(d.x, d.z) / l * (0.085 + 0.10 * g)
             let r = travel(dt, to: stand, reach: 0.05, fast: pet.food < 0.3 ? 1 : 0)
             if r == -1 { begin(.idle, for: 3); return }
             if r == 1 { phase = 1 }
@@ -1274,14 +1318,17 @@ final class Dog {
             phase = 2
         case 2, 3:
             // 입을 그릇 가운데(조금 앞쪽) 위로: 몸을 살짝씩 당기거나 물림
+            // 입은 그릇 안 가까운 쪽(가운데에서 2.5cm 앞쪽)으로, 몸은 가슴이 테두리 밖인 거리 안쪽으로는 들어가지 않음
             let m = mouthWorld
-            var want = bc + simd_normalize(SIMD2<Float>(pos.x, pos.z) - bc + SIMD2<Float>(1e-4, 0)) * 0.012
-            if simd_distance(want, bc) > 0.03 { want = bc }
+            let toDog = simd_normalize(SIMD2<Float>(pos.x, pos.z) - bc + SIMD2<Float>(1e-4, 0))
+            let want = bc + toDog * 0.025
             let e = want - SIMD2<Float>(m.x, m.z)
             let el = simd_length(e)
             if el > 0.006 && phase == 2 {
-                let step = e / el * min(el, 0.05 * dt)
-                pos.x += step.x; pos.z += step.y
+                var np = xz + e / el * min(el, 0.05 * dt)
+                let minD: Float = 0.075 + 0.10 * g                   // 앞발이 테두리 안으로 들어가지 않게
+                if simd_distance(np, bc) < minD { np = bc + simd_normalize(np - bc + SIMD2<Float>(1e-5, 0)) * minD }
+                pos.x = np.x; pos.z = np.y
             }
             if phase == 3 {
                 // 고개 들고 씹기 → 다시 그릇으로
@@ -1503,10 +1550,16 @@ final class Dog {
                 return
             }
             if chewy && Float.random(in: 0...1) < chewP {
-                // 엎드려 씹기·껴안고 핥기 (씹는 뼈는 오래)
-                anim.setPosture("down")
-                anim.hold(t.base == "blanky" ? "lick_paw" : "chew")
-                phase = 3; until = s.now + (t.base == "chewbone" ? Double.random(in: 15...30) : Double.random(in: 8...18))
+                if t.base == "blanky" {
+                    // 인형: 곁에 엎드려 껴안고 핥기
+                    anim.setPosture("down")
+                    anim.hold("lick_paw")
+                    phase = 3; until = s.now + Double.random(in: 8...18)
+                } else {
+                    // 씹는 뼈·삑삑이: 다가가 입으로 물어 든 뒤 엎드려 앞발 사이에 두고 씹음 (0.10.13: 바닥에 둔 채 떨어진 곳에서 허공을 씹었음)
+                    pickUp(t)
+                    phase = 7; until = s.now + 6
+                }
                 nextVoice = s.now + 0.6
             } else {
                 pickUp(t)
@@ -1536,10 +1589,17 @@ final class Dog {
                 fx("sigh", gain: -20)
                 phase = 3; until = s.now + Double.random(in: 12...30)
             }
+        case 7:
+            // 물 때까지 기다렸다가 엎드려 씹기
+            if carry != nil {
+                anim.setPosture("down")
+                anim.hold("chew")
+                phase = 3; until = s.now + (t.base == "chewbone" ? Double.random(in: 15...30) : Double.random(in: 8...18))
+            } else if pickTarget == nil || s.now > until { begin(.idle, for: 1) }
         default:
             pet.fun = min(1, pet.fun + 0.012 * dt)
             if s.now > nextVoice && t.base == "squeak" { nextVoice = s.now + Double.random(in: 0.7...2.2); anim.overlay("squeak_bite") }
-            if s.now > until { anim.stop(); begin(.idle, for: 2) }
+            if s.now > until { anim.stop(); if carry != nil { dropCarry(soft: true) }; begin(.idle, for: 2) }
         }
     }
 

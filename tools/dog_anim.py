@@ -252,6 +252,27 @@ def loco(name, base, T, stride, duty, offs, **kw):
 
 
 loco("walk", S(tail=(.05, 0), wag=.35), .46, .105, .62, LAT, lift=.018, bob=.0025, rollA=.025, yawA=.03, headA=.02)
+# 제자리에서 몸 돌리기 걸음 (0.10.13): 앞으로 나가는 보폭 없이 앞발은 도는 쪽, 뒷발은 반대쪽으로 한 발씩 옮겨 디딤
+# (0.10.12 까지 제자리에서 돌 땐 '걷기' 동작을 틀어 발이 앞뒤로 미끄러지며 스케이트 타듯 돌았음)
+def pivot(name, sgn, T=.42):
+    def m(s, t):
+        for leg in LEGS:
+            ph = (t / T + LAT[leg]) % 1
+            side = 1 if leg[0] == "F" else -1                         # 앞발은 도는 쪽, 뒷발은 반대쪽
+            a = .022 * sgn * side
+            if ph < .6:
+                x = a / 2 - a * ph / .6; y = 0
+            else:
+                u = (ph - .6) / .4
+                x = -a / 2 + a * (.5 - .5 * np.cos(np.pi * u)); y = .016 * np.sin(np.pi * u) ** .8
+            b = s[leg]
+            s[leg] = (b[0] + x * (1 if leg[1] == "L" else -1), b[1] + y, b[2], b[3])
+        s["sp"] = (s["sp"][0], sgn * .08, s["sp"][2]); s["nk"] = (s["nk"][0], sgn * .18, s["nk"][2])
+        return s
+    clip(name, [(0, S(wag=.35)), (T, S(wag=.35))], loop=True, speed=0., mod=m, events=steps(T, LAT), tag="loco", lin=True)
+
+
+pivot("pivot_l", 1); pivot("pivot_r", -1)
 loco("walk_sniff", S(pitch=.1, nk=(.75, 0, 0), hd=(.5, 0, 0), tail=(-.2, 0), wag=.25), .56, .085, .66, LAT, lift=.014, bob=.002, rollA=.02, yawA=.035,
      extra=osc("hd", .12, 3.2, idx=1))
 loco("walk_senior", S(dy=-.006, pitch=.04, nk=(.22, 0, 0), sp=(.06, 0, 0), tail=(-.7, -.3), wag=.12), .68, .075, .7, LAT, lift=.01, bob=.002, rollA=.035, yawA=.02, headA=.03, fp=.3)
@@ -268,16 +289,57 @@ loco("crawl", S(NEWBORN, dy=-.10, FL=(.035, .012, .04, -1.2), FR=(.035, .012, .0
 loco("army", S(DOWN, dy=-.096, nk=(-.2, 0, 0), wag=.8, tail=(-.3, 0)), .7, .05, .7, LAT, lift=.008, rollA=.05, yawA=.06)
 
 
-def turn(name, ang, T=.55):
+# 제자리에서 몸을 돌리기 (0.10.13): 몸통 한가운데를 축으로 돌고, 네 발은 땅을 디딘 채로 한 발씩 들어 옮겨 디딤.
+# 0.10.12 까지: 뿌리(엉덩이)를 축으로 몸만 돌리고 발 자리는 그대로 둬서 ① 엉덩이·뒷발은 제자리에 박힌 채 머리·앞몸만 360° 빙빙 돌고
+# ② 뒷다리가 구부러진 채 제 축으로 비틀려 돌았음 (로봇 다리처럼)
+BODY_C = np.array([0., 0., (STANCE["FL"][2] + STANCE["HL"][2]) / 2])
+STEP_ORDER = dict(FL=0., HR=.25, FR=.5, HL=.75)
+
+
+def plant_turn(yaw_fn, T, P, lift=.022):
+    """yaw_fn(t): 몸이 바라보는 쪽 (0 → 끝). P: 한 발이 한 번 옮겨 디디는 주기. 발은 디딘 자리에 머물다가 차례가 되면 들어서
+    몸이 조금 뒤 바라볼 쪽으로 미리 옮겨 디딤 (몸이 따라옴)"""
+    r0 = REST[IDX["root"]]
+    def foot_yaw(t, leg):
+        off = STEP_ORDER[leg]
+        x = t / P - off
+        n = np.floor(x); u = x - n
+        tgt = lambda k: yaw_fn((k + off + .75) * P)              # k 번째 걸음으로 디딜 곳 (몸보다 조금 앞)
+        prev = tgt(n - 1) if n >= 0 else yaw_fn(0)
+        if n < 0: return yaw_fn(0), 0.
+        if u < .45:
+            k = ease(u / .45)
+            return prev + (tgt(n) - prev) * k, lift * np.sin(np.pi * u / .45) * (1 if abs(tgt(n) - prev) > 1e-3 else 0)
+        return tgt(n), 0.
     def m(s, t):
-        u = ease(min(1, t / T))
-        s["yaw"] = ang * u
-        k = np.sin(np.pi * min(1, t / T))
-        for i, leg in enumerate(LEGS):
-            l = list(s[leg]); l[1] += .012 * k * abs(np.sin(np.pi * (t / T * 2 + i * .5))); s[leg] = tuple(l)
-        s["nk"] = (0, ang * .25 * (1 - u), 0); s["sp"] = (0, -ang * .12 * k, 0)
+        y = yaw_fn(t)
+        Ry = qmat(qeuler(0, y, 0))
+        c = BODY_C
+        nr = c + Ry @ (np.array([r0[0], 0, r0[2]]) - c)
+        s["dx"] += nr[0] - r0[0]; s["dz"] += nr[2] - r0[2]
+        s["yaw"] = y
+        for leg in LEGS:
+            side = 1 if leg[1] == "L" else -1
+            fy, h = foot_yaw(t, leg)
+            st = STANCE[leg] + np.array([side * s[leg][0], 0, s[leg][2]])
+            w = c + qmat(qeuler(0, fy, 0)) @ (st - c)
+            v = s[leg]
+            s[leg] = ((w[0] - STANCE[leg][0]) * side, v[1] + h, w[2] - STANCE[leg][2], v[3] - .25 * np.sin(np.pi * min(1, h / max(1e-6, lift))))
         return s
-    clip(name, [(0, STAND), (T, STAND)], mod=m, events=[(.12, "step"), (.3, "step"), (.45, "step")], tag="turn", lin=True)
+    return m
+
+
+def turn(name, ang, T=.55):
+    P = T / 2.2
+    yaw_fn = lambda t: ang * ease(min(1, max(0, t / T)))
+    m0 = plant_turn(yaw_fn, T, P, lift=.018)
+    def m(s, t):
+        s = m0(s, t)
+        k = np.sin(np.pi * min(1, t / T))
+        s["nk"] = (0, ang * .25 * (1 - ease(min(1, t / T))), 0); s["sp"] = (0, -ang * .1 * k, 0)
+        return s
+    D_ = T + P * 1.6                                              # 몸이 다 돈 뒤 남은 발을 마저 디딤
+    clip(name, [(0, STAND), (D_, STAND)], mod=m, events=[(P * (i + .45), "step") for i in range(int(D_ / P * 2))], tag="turn", lin=True)
 
 
 turn("turn_l", np.pi / 2); turn("turn_r", -np.pi / 2); turn("turn_back", np.pi, .8)
@@ -344,15 +406,20 @@ seq("look_back", [(0, STAND), (.4, S(sp=(0, .25, 0), ch=(0, .3, 0), nk=(0, .8, 0
 
 
 def spin(name, sgn):
-    # 제자리에서 한 바퀴 (꼬리 쫓기·볼일 전 맴돌기): 0.10.6 까지 0.9초에 한 바퀴(초당 7 라디안)·발을 1.6cm 만 들어
-    # 다리를 구부린 채 미끄러지며 도는 것처럼 보였음 → 1.6초에 한 바퀴, 발을 또박또박 들며 (한 바퀴에 걸음 8번)
-    T = 1.6
+    # 제자리에서 한 바퀴 (꼬리 쫓기·볼일 전 맴돌기·'돌아' 재주): 몸 한가운데를 축으로 1.8초에 한 바퀴,
+    # 네 발로 또박또박 걸어 돌듯 (한 발이 한 바퀴에 5번쯤 옮겨 디딤). 고개는 도는 쪽으로 조금 앞서 봄
+    T = 1.8
+    P = T / 5
+    yaw_fn = lambda t: sgn * 2 * np.pi * ease(min(1, max(0, t / T))) ** 1 if t < T else sgn * 2 * np.pi
+    lin_yaw = lambda t: sgn * 2 * np.pi * (min(1, max(0, t / T)) * .9 + .1 * ease(min(1, max(0, t / T))))
+    m0 = plant_turn(lin_yaw, T, P, lift=.024)
     def m(s, t):
-        s["yaw"] = sgn * 2 * np.pi * (t / T); s["sp"] = (0, sgn * .35, 0); s["ch"] = (0, sgn * .22, 0); s["nk"] = (.1, sgn * .5, 0); s["hd"] = (.1, sgn * .3, 0)
-        for i, leg in enumerate(LEGS):
-            l = list(s[leg]); l[1] += .026 * max(0, np.sin(np.pi * (t / T * 4 + i * .5))); s[leg] = tuple(l)
+        s = m0(s, t)
+        k = np.sin(np.pi * min(1, t / T)) ** .5
+        s["sp"] = (0, sgn * .22 * k, 0); s["ch"] = (0, sgn * .14 * k, 0); s["nk"] = (.08, sgn * .35 * k, 0); s["hd"] = (.08, sgn * .2 * k, 0)
         return s
-    clip(name, [(0, S(wag=.6)), (T, S(wag=.6))], loop=True, mod=m, events=[(i * .2, "step") for i in range(8)], tag="act", lin=True)
+    D_ = T + P * 1.6
+    clip(name, [(0, S(wag=.6)), (D_, S(wag=.6))], mod=m, events=[(P * (i + .45), "step") for i in range(int(D_ / P * 2))], tag="act", lin=True)
 
 
 spin("spin_l", 1); spin("spin_r", -1)

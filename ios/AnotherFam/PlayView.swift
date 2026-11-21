@@ -55,8 +55,10 @@ struct NeedRing: View {
             }
             .frame(width: size, height: size)
             .padding(tappable ? size * 0.08 : 0)
+            // 바라보면 고리가 15% 커지고 둥글게 밝아짐 (0.10.13: 밝아지기만 해서 어느 고리를 보고 있는지 알 수 없었음)
             .contentShape(.hoverEffect, Circle())
-            .hoverEffect(tappable ? .highlight : .automatic, isEnabled: tappable)
+            .hoverEffect(.highlight, isEnabled: tappable)
+            .hoverEffect(isEnabled: tappable) { e, on, _ in e.scaleEffect(on ? 1.15 : 1) }
             Text(label).font(.system(size: max(11, size * 0.26), weight: .medium)).foregroundStyle(value < 0.25 ? Color.red : .secondary)
         }
     }
